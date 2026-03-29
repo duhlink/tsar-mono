@@ -11,8 +11,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { getModel, type Model } from "@mariozechner/pi-ai";
+import { Agent, type ThinkingLevel } from "@tsar/agent-core";
+import { getModel, type Model } from "@tsar/ai";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -43,7 +43,7 @@ describe.skipIf(!HAS_ANTIGRAVITY_AUTH)("Compaction with thinking models (Antigra
 	});
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `pi-thinking-compaction-test-${Date.now()}`);
+		tempDir = join(tmpdir(), `tsar-thinking-compaction-test-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 	});
 
@@ -149,7 +149,7 @@ describe.skipIf(!HAS_ANTHROPIC_AUTH)("Compaction with thinking models (Anthropic
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `pi-thinking-compaction-anthropic-test-${Date.now()}`);
+		tempDir = join(tmpdir(), `tsar-thinking-compaction-anthropic-test-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 	});
 

@@ -44,7 +44,7 @@ export interface GoogleVertexOptions extends StreamOptions {
 	location?: string;
 }
 
-const API_VERSION = "v1";
+const ATSAR_VERSION = "v1";
 
 const THINKING_LEVEL_MAP: Record<GoogleThinkingLevel, ThinkingLevel> = {
 	THINKING_LEVEL_UNSPECIFIED: ThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
@@ -342,7 +342,7 @@ function createClient(
 		vertexai: true,
 		project,
 		location,
-		apiVersion: API_VERSION,
+		apiVersion: ATSAR_VERSION,
 		httpOptions: hasHttpOptions ? httpOptions : undefined,
 	});
 }
@@ -363,7 +363,7 @@ function createClientWithApiKey(
 	return new GoogleGenAI({
 		vertexai: true,
 		apiKey,
-		apiVersion: API_VERSION,
+		apiVersion: ATSAR_VERSION,
 		httpOptions: hasHttpOptions ? httpOptions : undefined,
 	});
 }

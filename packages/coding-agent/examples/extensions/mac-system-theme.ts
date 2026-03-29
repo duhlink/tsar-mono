@@ -1,5 +1,5 @@
 /**
- * Syncs pi theme with macOS system appearance (dark/light mode).
+ * Syncs tsar theme with macOS system appearance (dark/light mode).
  *
  * Usage:
  *   pi -e examples/extensions/mac-system-theme.ts
@@ -7,7 +7,7 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@tsar/coding-agent";
 
 const execAsync = promisify(exec);
 

@@ -1,5 +1,5 @@
 {
-	"name": "@mariozechner/pi-tui",
+	"name": "@tsar/tui",
 	"version": "0.63.1",
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"type": "module",
@@ -28,7 +28,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/badlogic/pi-mono.git",
+		"url": "git+https://github.com/badlogic/tsar-mono.git",
 		"directory": "packages/tui"
 	},
 	"engines": {

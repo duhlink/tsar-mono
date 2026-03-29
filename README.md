@@ -10,7 +10,7 @@ OSS weekend runs Friday, March 27, 2026 through Monday, April 6, 2026. New issue
 
 <p align="center">
   <a href="https://shittycodingagent.ai">
-    <img src="https://shittycodingagent.ai/logo.svg" alt="pi logo" width="128">
+    <img src="https://shittycodingagent.ai/logo.svg" alt="tsar logo" width="128">
   </a>
 </p>
 <p align="center">
@@ -25,7 +25,7 @@ OSS weekend runs Friday, March 27, 2026 through Monday, April 6, 2026. New issue
 
 # Pi Monorepo
 
-> **Looking for the pi coding agent?** See **[packages/coding-agent](packages/coding-agent)** for installation and usage.
+> **Looking for the tsar coding agent?** See **[packages/coding-agent](packages/coding-agent)** for installation and usage.
 
 Tools for building AI agents and managing LLM deployments.
 
@@ -33,13 +33,13 @@ Tools for building AI agents and managing LLM deployments.
 
 | Package | Description |
 |---------|-------------|
-| **[@mariozechner/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@mariozechner/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@mariozechner/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
-| **[@mariozechner/pi-mom](packages/mom)** | Slack bot that delegates messages to the pi coding agent |
-| **[@mariozechner/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
-| **[@mariozechner/pi-web-ui](packages/web-ui)** | Web components for AI chat interfaces |
-| **[@mariozechner/pi-pods](packages/pods)** | CLI for managing vLLM deployments on GPU pods |
+| **[@tsar/ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
+| **[@tsar/agent-core](packages/agent)** | Agent runtime with tool calling and state management |
+| **[@tsar/coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
+| **[@tsar/mom](packages/mom)** | Slack bot that delegates messages to the tsar coding agent |
+| **[@tsar/tui](packages/tui)** | Terminal UI library with differential rendering |
+| **[@tsar/web-ui](packages/web-ui)** | Web components for AI chat interfaces |
+| **[@tsar/pods-pods](packages/pods)** | CLI for managing vLLM deployments on GPU pods |
 
 ## Contributing
 
@@ -52,7 +52,7 @@ npm install          # Install all dependencies
 npm run build        # Build all packages
 npm run check        # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
-./pi-test.sh         # Run pi from sources (can be run from any directory)
+./tsar-test.sh         # Run tsar from sources (can be run from any directory)
 ```
 
 > **Note:** `npm run check` requires `npm run build` to be run first. The web-ui package uses `tsc` which needs compiled `.d.ts` files from dependencies.

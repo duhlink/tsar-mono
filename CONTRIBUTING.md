@@ -1,4 +1,4 @@
-# Contributing to pi
+# Contributing to tsar
 
 Thanks for wanting to contribute! This guide exists to save both of us time.
 
@@ -35,7 +35,7 @@ If you're adding a new provider to `packages/ai`, see `AGENTS.md` for required t
 
 ## Philosophy
 
-pi's core is minimal. If your feature doesn't belong in the core, it should be an extension. PRs that bloat the core will likely be rejected.
+tsar's core is minimal. If your feature doesn't belong in the core, it should be an extension. PRs that bloat the core will likely be rejected.
 
 ## Questions?
 

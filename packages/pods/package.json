@@ -1,10 +1,10 @@
 {
-	"name": "@mariozechner/pi",
+	"name": "@tsar/pods",
 	"version": "0.63.1",
 	"description": "CLI tool for managing vLLM deployments on GPU pods",
 	"type": "module",
 	"bin": {
-		"pi-pods": "dist/cli.js"
+		"tsar-pods": "dist/cli.js"
 	},
 	"scripts": {
 		"clean": "shx rm -rf dist",
@@ -26,14 +26,14 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/badlogic/pi-mono.git",
+		"url": "git+https://github.com/badlogic/tsar-mono.git",
 		"directory": "packages/pods"
 	},
 	"engines": {
 		"node": ">=20.0.0"
 	},
 	"dependencies": {
-		"@mariozechner/pi-agent-core": "^0.63.1",
+		"@tsar/agent-core": "^0.63.1",
 		"chalk": "^5.5.0"
 	},
 	"devDependencies": {}

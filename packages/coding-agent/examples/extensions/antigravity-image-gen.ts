@@ -11,17 +11,17 @@
  *
  * Save modes (tool param, env var, or config file):
  *   save=none     - Don't save to disk (default)
- *   save=project  - Save to <repo>/.pi/generated-images/
- *   save=global   - Save to ~/.pi/agent/generated-images/
- *   save=custom   - Save to saveDir param or PI_IMAGE_SAVE_DIR
+ *   save=project  - Save to <repo>/.tsar/generated-images/
+ *   save=global   - Save to ~/.tsar/agent/generated-images/
+ *   save=custom   - Save to saveDir param or TSAR_IMAGE_SAVE_DIR
  *
  * Environment variables:
- *   PI_IMAGE_SAVE_MODE  - Default save mode (none|project|global|custom)
- *   PI_IMAGE_SAVE_DIR   - Directory for custom save mode
+ *   TSAR_IMAGE_SAVE_MODE  - Default save mode (none|project|global|custom)
+ *   TSAR_IMAGE_SAVE_DIR   - Directory for custom save mode
  *
  * Config files (project overrides global):
- *   ~/.pi/agent/extensions/antigravity-image-gen.json
- *   <repo>/.pi/extensions/antigravity-image-gen.json
+ *   ~/.tsar/agent/extensions/antigravity-image-gen.json
+ *   <repo>/.tsar/extensions/antigravity-image-gen.json
  *   Example: { "save": "global" }
  */
 
@@ -29,9 +29,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
+import { StringEnum } from "@tsar/ai";
+import { type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@tsar/coding-agent";
 
 const PROVIDER = "google-antigravity";
 
@@ -51,7 +51,7 @@ const ANTIGRAVITY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com"
 const DEFAULT_ANTIGRAVITY_VERSION = "1.18.3";
 
 const ANTIGRAVITY_HEADERS = {
-	"User-Agent": `antigravity/${process.env.PI_AI_ANTIGRAVITY_VERSION || DEFAULT_ANTIGRAVITY_VERSION} darwin/arm64`,
+	"User-Agent": `antigravity/${process.env.TSAR_AI_ANTIGRAVITY_VERSION || DEFAULT_ANTIGRAVITY_VERSION} darwin/arm64`,
 	"X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
 	"Client-Metadata": JSON.stringify({
 		ideType: "IDE_UNSPECIFIED",
@@ -74,7 +74,7 @@ const TOOL_PARAMS = Type.Object({
 	save: Type.Optional(StringEnum(SAVE_MODES)),
 	saveDir: Type.Optional(
 		Type.String({
-			description: "Directory to save image when save=custom. Defaults to PI_IMAGE_SAVE_DIR if set.",
+			description: "Directory to save image when save=custom. Defaults to TSAR_IMAGE_SAVE_DIR if set.",
 		}),
 	),
 });
@@ -185,13 +185,13 @@ function readConfigFile(path: string): ExtensionConfig {
 function loadConfig(cwd: string): ExtensionConfig {
 	const globalPath = join(getAgentDir(), "extensions", "antigravity-image-gen.json");
 	const globalConfig = readConfigFile(globalPath);
-	const projectConfig = readConfigFile(join(cwd, ".pi", "extensions", "antigravity-image-gen.json"));
+	const projectConfig = readConfigFile(join(cwd, ".tsar", "extensions", "antigravity-image-gen.json"));
 	return { ...globalConfig, ...projectConfig };
 }
 
 function resolveSaveConfig(params: ToolParams, cwd: string): SaveConfig {
 	const config = loadConfig(cwd);
-	const envMode = (process.env.PI_IMAGE_SAVE_MODE || "").toLowerCase();
+	const envMode = (process.env.TSAR_IMAGE_SAVE_MODE || "").toLowerCase();
 	const paramMode = params.save;
 	const mode = (paramMode || envMode || config.save || DEFAULT_SAVE_MODE) as SaveMode;
 
@@ -200,7 +200,7 @@ function resolveSaveConfig(params: ToolParams, cwd: string): SaveConfig {
 	}
 
 	if (mode === "project") {
-		return { mode, outputDir: join(cwd, ".pi", "generated-images") };
+		return { mode, outputDir: join(cwd, ".tsar", "generated-images") };
 	}
 
 	if (mode === "global") {
@@ -209,9 +209,9 @@ function resolveSaveConfig(params: ToolParams, cwd: string): SaveConfig {
 	}
 
 	if (mode === "custom") {
-		const dir = params.saveDir || process.env.PI_IMAGE_SAVE_DIR || config.saveDir;
+		const dir = params.saveDir || process.env.TSAR_IMAGE_SAVE_DIR || config.saveDir;
 		if (!dir || !dir.trim()) {
-			throw new Error("save=custom requires saveDir or PI_IMAGE_SAVE_DIR.");
+			throw new Error("save=custom requires saveDir or TSAR_IMAGE_SAVE_DIR.");
 		}
 		return { mode, outputDir: dir };
 	}
@@ -355,7 +355,7 @@ export default function antigravityImageGen(pi: ExtensionAPI) {
 		name: "generate_image",
 		label: "Generate image",
 		description:
-			"Generate an image via Google Antigravity image models. Returns the image as a tool result attachment. Optional saving via save=project|global|custom|none, or PI_IMAGE_SAVE_MODE/PI_IMAGE_SAVE_DIR.",
+			"Generate an image via Google Antigravity image models. Returns the image as a tool result attachment. Optional saving via save=project|global|custom|none, or TSAR_IMAGE_SAVE_MODE/TSAR_IMAGE_SAVE_DIR.",
 		parameters: TOOL_PARAMS,
 		async execute(_toolCallId, params: ToolParams, signal, onUpdate, ctx) {
 			const { accessToken, projectId } = await getCredentials(ctx);

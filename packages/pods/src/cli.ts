@@ -49,8 +49,8 @@ Model Management:
 
 Environment:
   HF_TOKEN         HuggingFace token for model downloads
-  PI_API_KEY     API key for vLLM endpoints
-  PI_CONFIG_DIR    Config directory (default: ~/.pi)`);
+  TSAR_API_KEY     API key for vLLM endpoints
+  TSAR_CONFIG_DIR    Config directory (default: ~/.pi)`);
 }
 
 // Parse command line arguments
@@ -83,7 +83,7 @@ try {
 
 			if (!name || !sshCmd) {
 				console.error(
-					'Usage: pi pods setup <name> "<ssh>" [--mount "<mount>"] [--models-path <path>] [--vllm release|nightly|gpt-oss]',
+					'Usage: tsar pods setup <name> "<ssh>" [--mount "<mount>"] [--models-path <path>] [--vllm release|nightly|gpt-oss]',
 				);
 				process.exit(1);
 			}
@@ -125,7 +125,7 @@ try {
 			// pi pods active <name>
 			const name = args[2];
 			if (!name) {
-				console.error("Usage: pi pods active <name>");
+				console.error("Usage: tsar pods active <name>");
 				process.exit(1);
 			}
 			switchActivePod(name);
@@ -133,7 +133,7 @@ try {
 			// pi pods remove <name>
 			const name = args[2];
 			if (!name) {
-				console.error("Usage: pi pods remove <name>");
+				console.error("Usage: tsar pods remove <name>");
 				process.exit(1);
 			}
 			removePodCommand(name);
@@ -172,7 +172,7 @@ try {
 					if (podName) {
 						console.error(chalk.red(`Pod '${podName}' not found`));
 					} else {
-						console.error(chalk.red("No active pod. Use 'pi pods active <name>' to set one."));
+						console.error(chalk.red("No active pod. Use 'tsar pods active <name>' to set one."));
 					}
 					process.exit(1);
 				}
@@ -204,7 +204,7 @@ try {
 					podName = args[1];
 					sshCommand = args[2];
 				} else {
-					console.error('Usage: pi ssh [<name>] "<command>"');
+					console.error('Usage: tsar ssh [<name>] "<command>"');
 					process.exit(1);
 				}
 
@@ -224,7 +224,7 @@ try {
 					if (podName) {
 						console.error(chalk.red(`Pod '${podName}' not found`));
 					} else {
-						console.error(chalk.red("No active pod. Use 'pi pods active <name>' to set one."));
+						console.error(chalk.red("No active pod. Use 'tsar pods active <name>' to set one."));
 					}
 					process.exit(1);
 				}
@@ -319,7 +319,7 @@ try {
 				// pi logs <name>
 				const name = args[1];
 				if (!name) {
-					console.error("Usage: pi logs <name>");
+					console.error("Usage: tsar logs <name>");
 					process.exit(1);
 				}
 				await viewLogs(name, { pod: podOverride });
@@ -329,11 +329,11 @@ try {
 				// pi agent <name> [messages...] [options]
 				const name = args[1];
 				if (!name) {
-					console.error("Usage: pi agent <name> [messages...] [options]");
+					console.error("Usage: tsar agent <name> [messages...] [options]");
 					process.exit(1);
 				}
 
-				const apiKey = process.env.PI_API_KEY;
+				const apiKey = process.env.TSAR_API_KEY;
 
 				// Pass all args after the model name
 				const agentArgs = args.slice(2);

@@ -64,7 +64,7 @@ async function main(): Promise<void> {
 
 	if (!command || command === "help" || command === "--help" || command === "-h") {
 		const providerList = PROVIDERS.map((p) => `  ${p.id.padEnd(20)} ${p.name}`).join("\n");
-		console.log(`Usage: npx @mariozechner/pi-ai <command> [provider]
+		console.log(`Usage: npx @tsar/ai <command> [provider]
 
 Commands:
   login [provider]  Login to an OAuth provider
@@ -74,9 +74,9 @@ Providers:
 ${providerList}
 
 Examples:
-  npx @mariozechner/pi-ai login              # interactive provider selection
-  npx @mariozechner/pi-ai login anthropic    # login to specific provider
-  npx @mariozechner/pi-ai list               # list providers
+  npx @tsar/ai login              # interactive provider selection
+  npx @tsar/ai login anthropic    # login to specific provider
+  npx @tsar/ai list               # list providers
 `);
 		return;
 	}
@@ -113,7 +113,7 @@ Examples:
 
 		if (!PROVIDERS.some((p) => p.id === provider)) {
 			console.error(`Unknown provider: ${provider}`);
-			console.error(`Use 'npx @mariozechner/pi-ai list' to see available providers`);
+			console.error(`Use 'npx @tsar/ai list' to see available providers`);
 			process.exit(1);
 		}
 
@@ -123,7 +123,7 @@ Examples:
 	}
 
 	console.error(`Unknown command: ${command}`);
-	console.error(`Use 'npx @mariozechner/pi-ai --help' for usage`);
+	console.error(`Use 'npx @tsar/ai --help' for usage`);
 	process.exit(1);
 }
 

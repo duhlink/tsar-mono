@@ -1,6 +1,6 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
+import type { AgentTool } from "@tsar/agent-core";
+import { Text } from "@tsar/tui";
 import { existsSync, readdirSync, statSync } from "fs";
 import nodePath from "path";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";

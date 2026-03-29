@@ -23,7 +23,7 @@ A Slack bot powered by an LLM that can execute bash commands, read/write files, 
 ## Installation
 
 ```bash
-npm install @mariozechner/pi-mom
+npm install @tsar/mom
 ```
 
 ### Slack App Setup
@@ -64,7 +64,7 @@ export MOM_SLACK_APP_TOKEN=xapp-...
 export MOM_SLACK_BOT_TOKEN=xoxb-...
 # Option 1: Anthropic API key
 export ANTHROPIC_API_KEY=sk-ant-...
-# Option 2: use /login command in pi agent, then copy/link auth.json to ~/.pi/mom/
+# Option 2: use /login command in tsar agent, then copy/link auth.json to ~/.tsar/mom/
 
 # Create Docker sandbox (recommended)
 docker run -d \
@@ -108,11 +108,11 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 2. **OAuth Login via coding agent command** (Recommended for Claude Pro/Max)
 
-- run interactive coding agent session: `npx @mariozechner/pi-coding-agent`
+- run interactive coding agent session: `npx @tsar/coding-agent`
 - enter `/login` command
   - choose "Anthropic" provider
   - follow instructions in the browser
-- link `auth.json` to mom: `ln -s ~/.pi/agent/auth.json ~/.pi/mom/auth.json`
+- link `auth.json` to mom: `ln -s ~/.tsar/agent/auth.json ~/.tsar/mom/auth.json`
 
 ## How Mom Works
 
@@ -237,7 +237,7 @@ description: Read, search, and send Gmail via IMAP/SMTP
 
 When mom responds, she's given the names, descriptions, and file locations of all `SKILL.md` files in `/workspace/skills/` and `/workspace/<channel>/skills/`, so she knows what's available to handle your request. When mom decides to use a skill, she reads the `SKILL.md` in full, after which she's able to use the skill by invoking its scripts and programs.
 
-You can find a set of basic skills at [github.com/badlogic/pi-skills](https://github.com/badlogic/pi-skills). Just tell mom to clone this repository into `/workspace/skills/pi-skills` and she'll help you set up the rest.
+You can find a set of basic skills at [github.com/badlogic/tsar-skills](https://github.com/badlogic/tsar-skills). Just tell mom to clone this repository into `/workspace/skills/tsar-skills` and she'll help you set up the rest.
 
 #### Creating a Skill
 
@@ -364,7 +364,7 @@ You can write event files directly to `data/events/` on the host machine. This l
 
 ### Updating Mom
 
-Update mom anytime with `npm install -g @mariozechner/pi-mom`. This only updates the Node.js app on your host. Anything mom installed inside the Docker container remains unchanged.
+Update mom anytime with `npm install -g @tsar/mom`. This only updates the Node.js app on your host. Anything mom installed inside the Docker container remains unchanged.
 
 ## Message History
 

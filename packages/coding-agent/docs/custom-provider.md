@@ -31,7 +31,7 @@ See these complete provider examples:
 ## Quick Reference
 
 ```typescript
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@tsar/coding-agent";
 
 export default function (pi: ExtensionAPI) {
   // Override baseUrl for existing provider
@@ -174,7 +174,7 @@ models: [{
   compat: {
     supportsDeveloperRole: false,      // use "system" instead of "developer"
     supportsReasoningEffort: true,
-    reasoningEffortMap: {              // map pi-ai levels to provider values
+    reasoningEffortMap: {              // map tsar-ai levels to provider values
       minimal: "default",
       low: "default",
       medium: "default",
@@ -213,7 +213,7 @@ pi.registerProvider("custom-api", {
 Add OAuth/SSO authentication that integrates with `/login`:
 
 ```typescript
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@mariozechner/pi-ai";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@tsar/ai";
 
 pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
@@ -291,7 +291,7 @@ interface OAuthLoginCallbacks {
 
 ### OAuthCredentials
 
-Credentials are persisted in `~/.pi/agent/auth.json`:
+Credentials are persisted in `~/.tsar/agent/auth.json`:
 
 ```typescript
 interface OAuthCredentials {
@@ -326,7 +326,7 @@ import {
   type SimpleStreamOptions,
   calculateCost,
   createAssistantMessageEventStream,
-} from "@mariozechner/pi-ai";
+} from "@tsar/ai";
 
 function streamMyProvider(
   model: Model<any>,

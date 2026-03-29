@@ -1,5 +1,5 @@
 {
-  "name": "pi-extension-custom-provider-qwen-cli",
+  "name": "tsar-extension-custom-provider-qwen-cli",
   "private": true,
   "version": "1.13.1",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "echo 'nothing to build'",
     "check": "echo 'nothing to check'"
   },
-  "pi": {
+  "tsar": {
     "extensions": [
       "./index.ts"
     ]

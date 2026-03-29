@@ -1,4 +1,4 @@
-// Core type definitions for pi
+// Core type definitions for tsar
 
 export interface GPU {
 	id: number;
