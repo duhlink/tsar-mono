@@ -1,6 +1,12 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@tsar/agent-core";
-import { type Message, type Model, streamSimple } from "@tsar/ai";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	type Message,
+	type Model,
+	streamSimple,
+} from "@tsar/ai";
 import { getAgentDir, getDocsPath } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import { AuthStorage } from "./auth-storage.js";
@@ -296,7 +302,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		streamFn: async (model, context, options) => {
 			const auth = await modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) {
-				throw new Error(auth.error);
+				// Honor StreamFn contract: encode failures in the stream, don't throw.
+				// This lets the error flow through the normal event path (message_start →
+				// message_end → turn_end → agent_end) so it gets persisted to the session.
+				const errorMsg: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "" }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "error",
+					errorMessage: auth.error,
+					timestamp: Date.now(),
+				};
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => stream.push({ type: "error", reason: "error", error: errorMsg }));
+				return stream;
 			}
 			return streamSimple(model, context, {
 				...options,

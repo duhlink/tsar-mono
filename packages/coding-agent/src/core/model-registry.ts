@@ -578,6 +578,18 @@ export class ModelRegistry {
 					? resolveConfigValueOrThrow(providerConfig.apiKey, `API key for provider "${model.provider}"`)
 					: undefined);
 
+			// If credentials are configured but resolution returned undefined, it means
+			// OAuth refresh failed or an API key command failed. Return ok:false with a
+			// clear error instead of passing undefined apiKey to the stream function.
+			if (apiKey === undefined && !providerConfig?.authHeader && this.authStorage.hasAuth(model.provider)) {
+				return {
+					ok: false,
+					error: this.isUsingOAuth(model)
+						? `Authentication expired for "${model.provider}". Run '/login ${model.provider}' to re-authenticate.`
+						: `API key resolution failed for "${model.provider}". Check your API key configuration or set an environment variable.`,
+				};
+			}
+
 			const providerHeaders = resolveHeadersOrThrow(providerConfig?.headers, `provider "${model.provider}"`);
 			const modelHeaders = resolveHeadersOrThrow(
 				this.modelRequestHeaders.get(this.getModelRequestKey(model.provider, model.id)),
@@ -591,7 +603,10 @@ export class ModelRegistry {
 
 			if (providerConfig?.authHeader) {
 				if (!apiKey) {
-					return { ok: false, error: `No API key found for "${model.provider}"` };
+					return {
+						ok: false,
+						error: `No API key found for "${model.provider}". Check provider configuration in models.json.`,
+					};
 				}
 				headers = { ...headers, Authorization: `Bearer ${apiKey}` };
 			}
@@ -602,9 +617,10 @@ export class ModelRegistry {
 				headers: headers && Object.keys(headers).length > 0 ? headers : undefined,
 			};
 		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
 			return {
 				ok: false,
-				error: error instanceof Error ? error.message : String(error),
+				error: `${message}. Check provider configuration in models.json.`,
 			};
 		}
 	}

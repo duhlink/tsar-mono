@@ -315,4 +315,221 @@ describe("AgentSession retry", () => {
 		await session.prompt("Follow-up");
 		expect(callCount).toBe(4);
 	});
+
+	it("prompt rejects with auth error before agent loop when OAuth token refresh fails", async () => {
+		let streamFnCalled = false;
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				streamFnCalled = true;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+
+		// Set expired OAuth credential that will fail to refresh
+		authStorage.set("anthropic", {
+			type: "oauth",
+			access: "expired-token",
+			refresh: "invalid-refresh",
+			expires: 0,
+		} as any);
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		// prompt() should throw with auth error before entering the agent loop
+		await expect(session.prompt("Test")).rejects.toThrow(/Authentication expired for "anthropic"/);
+
+		// streamFn should never have been called — error caught in pre-flight check
+		expect(streamFnCalled).toBe(false);
+	});
+
+	it("prompt rejects with apiKey error when no auth is configured at all", async () => {
+		let streamFnCalled = false;
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				streamFnCalled = true;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+
+		// Explicitly remove any auth — getApiKeyAndHeaders returns ok:true, apiKey:undefined
+		authStorage.remove("anthropic");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		// prompt() should throw with "No API key" error before entering the agent loop
+		await expect(session.prompt("Test")).rejects.toThrow(/No API key found for anthropic/);
+
+		// streamFn should never have been called
+		expect(streamFnCalled).toBe(false);
+	});
+
+	it("setModel accepts model with expired OAuth (deferred validation)", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const created = createSession({ failCount: 0 });
+
+		// Set expired OAuth credential
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.set("anthropic", {
+			type: "oauth",
+			access: "expired-token",
+			refresh: "invalid-refresh",
+			expires: 0,
+		} as any);
+
+		// setModel uses hasConfiguredAuth (sync, non-refreshing) — should succeed
+		// because auth data exists even if expired. Failure is deferred to prompt().
+		await expect(created.session.setModel(model)).resolves.toBeUndefined();
+	});
+
+	it("setModel rejects model with no auth configured at all", async () => {
+		const created = createSession({ failCount: 0 });
+
+		// Use a provider that has no auth configured
+		const googleModel = getModel("google", "gemini-2.5-flash");
+		if (googleModel) {
+			await expect(created.session.setModel(googleModel)).rejects.toThrow(/No API key/);
+		}
+	});
+
+	it("compact() emits compaction_end with errorMessage when auth fails", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+
+		// Set expired OAuth credential — getApiKeyAndHeaders returns ok:false
+		authStorage.set("anthropic", {
+			type: "oauth",
+			access: "expired-token",
+			refresh: "invalid-refresh",
+			expires: 0,
+		} as any);
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		// Collect compaction_end events
+		let compactionEndEvent: any = null;
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEndEvent = event;
+			}
+		});
+
+		// compact() should throw because auth fails via _getRequiredRequestAuth
+		await expect(session.compact()).rejects.toThrow(/Authentication expired/);
+
+		// compaction_end should include errorMessage
+		expect(compactionEndEvent).not.toBeNull();
+		expect(compactionEndEvent.errorMessage).toContain("Authentication expired");
+		expect(compactionEndEvent.aborted).toBe(false);
+	});
+
+	it("sdk.ts streamFn error stream flows through agent event lifecycle", async () => {
+		// Verify that when getApiKeyAndHeaders returns ok:false, the error stream
+		// from sdk.ts flows through the agent's normal event lifecycle (message_start →
+		// message_end → turn_end → agent_end) and the error is persisted.
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				// Simulate sdk.ts streamFn returning an error stream (Fix 4 behavior)
+				const errorMsg = createAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Authentication expired for \"anthropic\". Run '/login anthropic' to re-authenticate.",
+				});
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "error", reason: "error", error: errorMsg });
+				});
+				return stream;
+			},
+		});
+
+		const events: string[] = [];
+		agent.subscribe((event) => {
+			events.push(event.type);
+		});
+
+		await agent.prompt("test");
+
+		// Verify the full lifecycle emitted
+		expect(events).toContain("message_start");
+		expect(events).toContain("message_end");
+		expect(events).toContain("turn_end");
+		expect(events).toContain("agent_end");
+
+		// Verify ordering
+		const msgStart = events.indexOf("message_start");
+		const msgEnd = events.indexOf("message_end");
+		const turnEnd = events.indexOf("turn_end");
+		const agentEnd = events.indexOf("agent_end");
+		expect(msgStart).toBeLessThan(msgEnd);
+		expect(msgEnd).toBeLessThan(turnEnd);
+		expect(turnEnd).toBeLessThan(agentEnd);
+
+		// Verify error message is in agent state
+		const lastMsg = agent.state.messages[agent.state.messages.length - 1];
+		expect(lastMsg.role).toBe("assistant");
+		expect((lastMsg as any).stopReason).toBe("error");
+		expect((lastMsg as any).errorMessage).toContain("Authentication expired");
+	});
 });

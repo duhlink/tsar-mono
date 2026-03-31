@@ -6,6 +6,16 @@
 
 - Added `ctx.signal` to `ExtensionContext` and wired it to the active agent turn so extension handlers can forward cancellation into nested model calls, `fetch()`, and other abort-aware work ([#2660](https://github.com/badlogic/pi-mono/issues/2660))
 
+### Fixed
+
+- Fixed session persistence for pre-stream errors (e.g., expired OAuth tokens) by emitting full message lifecycle events (`message_start` → `message_end` → `turn_end` → `agent_end`) in the `_runLoop` catch block. Previously, errors thrown before streaming produced only `agent_end`, so the error was never written to the session JSONL and resume lost the context.
+- Fixed `getApiKeyAndHeaders` to return `ok: false` when credentials are configured but API key resolution fails (e.g., expired OAuth token refresh failure), instead of silently passing `undefined` to the stream function.
+- Fixed `sdk.ts` `streamFn` to honor the `StreamFn` contract by returning an error stream instead of throwing when auth resolution fails. Errors now flow through the normal agent event lifecycle for proper persistence.
+- Fixed `prompt()` pre-flight auth check to use async `getApiKeyAndHeaders()` (which refreshes OAuth tokens) instead of synchronous `hasConfiguredAuth()`. Also added a guard for the `ok: true, apiKey: undefined` case (no auth configured at all) to produce a friendly error instead of a raw HTTP 401.
+- Improved auth error messages to be context-aware: OAuth failures point to `/login`, custom provider failures point to `models.json` configuration, and generic `api_key` failures suggest checking API key configuration. Previously, all non-OAuth errors blindly suggested `/login` which is only valid for built-in OAuth providers.
+- Fixed `_runAutoCompaction` to surface auth failure reason in the `compaction_end` event's `errorMessage` field instead of silently swallowing the error.
+- Simplified `_getRequiredRequestAuth()` by removing duplicated OAuth check logic (now consolidated in `getApiKeyAndHeaders`) and dead code for the `ok: true, apiKey: undefined` OAuth path.
+
 ## [0.63.1] - 2026-03-27
 
 ### Added

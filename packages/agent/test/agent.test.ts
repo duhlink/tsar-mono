@@ -337,4 +337,73 @@ describe("Agent", () => {
 		await agent.prompt("hello again");
 		expect(receivedSessionId).toBe("session-def");
 	});
+
+	describe("pre-stream error handling", () => {
+		it("emits message_start, message_end, turn_end, agent_end when streamFn throws", async () => {
+			const agent = new Agent({
+				streamFn: () => {
+					throw new Error("No API key for provider: anthropic");
+				},
+			});
+
+			const events: string[] = [];
+			agent.subscribe((event) => {
+				events.push(event.type);
+			});
+
+			await agent.prompt("test");
+
+			expect(events).toContain("message_start");
+			expect(events).toContain("message_end");
+			expect(events).toContain("turn_end");
+			expect(events).toContain("agent_end");
+
+			// Verify ordering: message_start before message_end before turn_end before agent_end
+			const msgStart = events.lastIndexOf("message_start");
+			const msgEnd = events.lastIndexOf("message_end");
+			const turnEnd = events.lastIndexOf("turn_end");
+			const agentEnd = events.lastIndexOf("agent_end");
+			expect(msgStart).toBeLessThan(msgEnd);
+			expect(msgEnd).toBeLessThan(turnEnd);
+			expect(turnEnd).toBeLessThan(agentEnd);
+		});
+
+		it("creates error assistant message with correct fields when streamFn throws", async () => {
+			const agent = new Agent({
+				streamFn: () => {
+					throw new Error("Auth expired");
+				},
+			});
+
+			await agent.prompt("test");
+
+			const lastMsg = agent.state.messages[agent.state.messages.length - 1];
+			expect(lastMsg.role).toBe("assistant");
+			expect((lastMsg as any).stopReason).toBe("error");
+			expect((lastMsg as any).errorMessage).toBe("Auth expired");
+			expect(agent.state.error).toBe("Auth expired");
+		});
+
+		it("emits message_end with the error message for session persistence", async () => {
+			const agent = new Agent({
+				streamFn: () => {
+					throw new Error("Network error");
+				},
+			});
+
+			let messageEndPayload: any = null;
+			agent.subscribe((event) => {
+				if (event.type === "message_end") {
+					messageEndPayload = event;
+				}
+			});
+
+			await agent.prompt("test");
+
+			expect(messageEndPayload).not.toBeNull();
+			expect(messageEndPayload.message.role).toBe("assistant");
+			expect(messageEndPayload.message.stopReason).toBe("error");
+			expect(messageEndPayload.message.errorMessage).toBe("Network error");
+		});
+	});
 });

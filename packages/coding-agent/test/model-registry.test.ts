@@ -1119,7 +1119,9 @@ describe("ModelRegistry", () => {
 				});
 			});
 
-			test("getApiKeyAndHeaders returns an error for failed authHeader resolution", async () => {
+			test("Branch 3: catch block wraps apiKey resolution failure with models.json guidance", async () => {
+				// When resolveConfigValueOrThrow throws (e.g., shell command fails),
+				// the catch block wraps it with models.json guidance.
 				writeRawModelsJson({
 					"custom-provider": {
 						...providerWithApiKey("!exit 1"),
@@ -1135,6 +1137,78 @@ describe("ModelRegistry", () => {
 				expect(auth.ok).toBe(false);
 				if (!auth.ok) {
 					expect(auth.error).toContain('Failed to resolve API key for provider "custom-provider"');
+					expect(auth.error).toContain("models.json");
+					expect(auth.error).not.toContain("/login");
+				}
+			});
+
+			test("Branch 1 OAuth: expired token returns re-login message with /login guidance", async () => {
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+				const model = registry.find("anthropic", "claude-sonnet-4-5");
+				expect(model).toBeDefined();
+
+				// Set expired OAuth credential — refresh fails, getApiKey returns undefined.
+				// hasAuth returns true (data["anthropic"] exists).
+				authStorage.set("anthropic", {
+					type: "oauth",
+					access: "expired-token",
+					refresh: "invalid-refresh-token",
+					expires: 0,
+				} as any);
+
+				const auth = await registry.getApiKeyAndHeaders(model!);
+				expect(auth.ok).toBe(false);
+				if (!auth.ok) {
+					expect(auth.error).toContain('Authentication expired for "anthropic"');
+					expect(auth.error).toContain("/login anthropic");
+				}
+			});
+
+			test("Branch 1 non-OAuth: api_key credential failure returns config guidance without /login", async () => {
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+				const model = registry.find("anthropic", "claude-sonnet-4-5");
+				expect(model).toBeDefined();
+
+				// Set api_key type credential with a failing shell command.
+				// hasAuth returns true, getApiKey returns undefined (command fails),
+				// isUsingOAuth returns false (type is "api_key").
+				authStorage.set("anthropic", {
+					type: "api_key",
+					key: "!exit 1",
+				} as any);
+
+				const auth = await registry.getApiKeyAndHeaders(model!);
+				expect(auth.ok).toBe(false);
+				if (!auth.ok) {
+					expect(auth.error).toContain('API key resolution failed for "anthropic"');
+					expect(auth.error).toContain("Check your API key configuration");
+					expect(auth.error).not.toContain("/login");
+				}
+			});
+
+			// Branch 2 (authHeader:true, no resolvable apiKey) is defensive code:
+			// models.json validation requires apiKey or oauth when defining models,
+			// and if apiKey is set but fails resolution, resolveConfigValueOrThrow throws
+			// before Branch 2 is reached (hitting Branch 3 instead). Branch 2 is only
+			// reachable via degenerate programmatic config — not tested here.
+
+			test("getApiKeyAndHeaders returns ok:true with undefined apiKey when no auth is configured at all", async () => {
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+				// Use built-in model, no auth set in authStorage or env
+				const model = registry.find("anthropic", "claude-sonnet-4-5");
+				expect(model).toBeDefined();
+
+				// Ensure no auth of any kind for anthropic
+				authStorage.remove("anthropic");
+
+				const auth = await registry.getApiKeyAndHeaders(model!);
+				// When no auth is configured at all, ok:true is valid (model discovery path)
+				expect(auth.ok).toBe(true);
+				if (auth.ok) {
+					expect(auth.apiKey).toBeUndefined();
 				}
 			});
 		});

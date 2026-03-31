@@ -598,6 +598,12 @@ export class Agent {
 
 			this.appendMessage(errorMsg);
 			this._state.error = err?.message || String(err);
+			// Emit full message lifecycle events so external listeners (e.g., AgentSession)
+			// can persist the error to the session file. Without these events, pre-stream
+			// errors are lost — only visible at runtime but never written to the JSONL.
+			this.emit({ type: "message_start", message: errorMsg });
+			this.emit({ type: "message_end", message: errorMsg });
+			this.emit({ type: "turn_end", message: errorMsg, toolResults: [] });
 			this.emit({ type: "agent_end", messages: [errorMsg] });
 		} finally {
 			this._state.isStreaming = false;

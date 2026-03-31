@@ -319,22 +319,10 @@ export class AgentSession {
 		if (!result.ok) {
 			throw new Error(result.error);
 		}
-		if (result.apiKey) {
-			return { apiKey: result.apiKey, headers: result.headers };
+		if (!result.apiKey) {
+			throw new Error(`No API key found for ${model.provider}. Use /login or set an API key environment variable.`);
 		}
-
-		const isOAuth = this._modelRegistry.isUsingOAuth(model);
-		if (isOAuth) {
-			throw new Error(
-				`Authentication failed for "${model.provider}". ` +
-					`Credentials may have expired or network is unavailable. ` +
-					`Run '/login ${model.provider}' to re-authenticate.`,
-			);
-		}
-		throw new Error(
-			`No API key found for ${model.provider}.\n\n` +
-				`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}`,
-		);
+		return { apiKey: result.apiKey, headers: result.headers };
 	}
 
 	/**
@@ -966,18 +954,13 @@ export class AgentSession {
 			);
 		}
 
-		if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
-			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
-			if (isOAuth) {
-				throw new Error(
-					`Authentication failed for "${this.model.provider}". ` +
-						`Credentials may have expired or network is unavailable. ` +
-						`Run '/login ${this.model.provider}' to re-authenticate.`,
-				);
-			}
+		const authCheck = await this._modelRegistry.getApiKeyAndHeaders(this.model);
+		if (!authCheck.ok) {
+			throw new Error(authCheck.error);
+		}
+		if (!authCheck.apiKey) {
 			throw new Error(
-				`No API key found for ${this.model.provider}.\n\n` +
-					`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}`,
+				`No API key found for ${this.model.provider}. Use /login or set an API key environment variable.`,
 			);
 		}
 
@@ -1881,6 +1864,7 @@ export class AgentSession {
 					result: undefined,
 					aborted: false,
 					willRetry: false,
+					errorMessage: authResult.ok ? `No API key available for ${this.model.provider}` : authResult.error,
 				});
 				return;
 			}
