@@ -10,7 +10,7 @@ import { createAgentSession, DefaultResourceLoader, SessionManager } from "@tsar
 const loader1 = new DefaultResourceLoader({
 	systemPromptOverride: () => `You are a helpful assistant that speaks like a pirate.
 Always end responses with "Arrr!"`,
-	// Needed to avoid DefaultResourceLoader appending APPEND_SYSTEM.md from ~/.tsar/agent or <cwd>/.pi.
+	// Needed to avoid DefaultResourceLoader appending APPEND_SYSTEM.md from ~/.tsar/agent or <cwd>/.tsar.
 	appendSystemPromptOverride: () => [],
 });
 await loader1.reload();

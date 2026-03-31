@@ -50,7 +50,7 @@ Model Management:
 Environment:
   HF_TOKEN         HuggingFace token for model downloads
   TSAR_API_KEY     API key for vLLM endpoints
-  TSAR_CONFIG_DIR    Config directory (default: ~/.pi)`);
+  TSAR_CONFIG_DIR    Config directory (default: ~/.tsar)`);
 }
 
 // Parse command line arguments

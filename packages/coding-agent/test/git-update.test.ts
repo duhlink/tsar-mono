@@ -322,7 +322,7 @@ describe("DefaultPackageManager git update", () => {
 			mkdirSync(join(cachedDir, "tsar-extensions"), { recursive: true });
 			writeFileSync(
 				join(cachedDir, "package.json"),
-				JSON.stringify({ pi: { extensions: ["./pi-extensions"] } }, null, 2),
+				JSON.stringify({ tsar: { extensions: ["./tsar-extensions"] } }, null, 2),
 			);
 			writeFileSync(extensionFile, "// stale");
 
@@ -369,7 +369,7 @@ describe("DefaultPackageManager git update", () => {
 			mkdirSync(join(cachedDir, "tsar-extensions"), { recursive: true });
 			writeFileSync(
 				join(cachedDir, "package.json"),
-				JSON.stringify({ pi: { extensions: ["./pi-extensions"] } }, null, 2),
+				JSON.stringify({ tsar: { extensions: ["./tsar-extensions"] } }, null, 2),
 			);
 			writeFileSync(extensionFile, "// pinned");
 
