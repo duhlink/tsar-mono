@@ -473,7 +473,7 @@ describe("AgentSession retry", () => {
 			}
 		});
 
-		// compact() should throw because auth fails via _getRequiredRequestAuth
+		// compact() should throw because auth fails via _assertAuth
 		await expect(session.compact()).rejects.toThrow(/Authentication expired/);
 
 		// compaction_end should include errorMessage

@@ -311,10 +311,7 @@ export class AgentSession {
 		return this._modelRegistry;
 	}
 
-	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
-		apiKey: string;
-		headers?: Record<string, string>;
-	}> {
+	private async _assertAuth(model: Model<any>): Promise<{ apiKey: string; headers?: Record<string, string> }> {
 		const result = await this._modelRegistry.getApiKeyAndHeaders(model);
 		if (!result.ok) {
 			throw new Error(result.error);
@@ -954,15 +951,7 @@ export class AgentSession {
 			);
 		}
 
-		const authCheck = await this._modelRegistry.getApiKeyAndHeaders(this.model);
-		if (!authCheck.ok) {
-			throw new Error(authCheck.error);
-		}
-		if (!authCheck.apiKey) {
-			throw new Error(
-				`No API key found for ${this.model.provider}. Use /login or set an API key environment variable.`,
-			);
-		}
+		await this._assertAuth(this.model);
 
 		// Check if we need to compact before sending (catches aborted responses)
 		const lastAssistant = this._findLastAssistantMessage();
@@ -1611,7 +1600,7 @@ export class AgentSession {
 				throw new Error("No model selected");
 			}
 
-			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
+			const { apiKey, headers } = await this._assertAuth(this.model);
 
 			const pathEntries = this.sessionManager.getBranch();
 			const settings = this.settingsManager.getCompactionSettings();
@@ -1857,14 +1846,25 @@ export class AgentSession {
 			}
 
 			const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
-			if (!authResult.ok || !authResult.apiKey) {
+			if (!authResult.ok) {
 				this._emit({
 					type: "compaction_end",
 					reason,
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage: authResult.ok ? `No API key available for ${this.model.provider}` : authResult.error,
+					errorMessage: authResult.error,
+				});
+				return;
+			}
+			if (!authResult.apiKey) {
+				this._emit({
+					type: "compaction_end",
+					reason,
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage: `No API key available for ${this.model.provider}`,
 				});
 				return;
 			}
@@ -2887,7 +2887,7 @@ export class AgentSession {
 		let summaryDetails: unknown;
 		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 			const model = this.model!;
-			const { apiKey, headers } = await this._getRequiredRequestAuth(model);
+			const { apiKey, headers } = await this._assertAuth(model);
 			const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 			const result = await generateBranchSummary(entriesToSummarize, {
 				model,

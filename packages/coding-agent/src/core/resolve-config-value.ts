@@ -6,8 +6,10 @@
 import { execSync, spawnSync } from "child_process";
 import { getShellConfig } from "../utils/shell.js";
 
-// Cache for shell command results (persists for process lifetime)
-const commandResultCache = new Map<string, string | undefined>();
+// Cache for shell command results with 5-minute TTL.
+// Prevents stale credentials when commands produce time-varying results (e.g., token refresh).
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const commandResultCache = new Map<string, { value: string | undefined; expiry: number }>();
 
 /**
  * Resolve a config value (API key, header value, etc.) to an actual value.
@@ -76,12 +78,13 @@ function executeCommandUncached(commandConfig: string): string | undefined {
 }
 
 function executeCommand(commandConfig: string): string | undefined {
-	if (commandResultCache.has(commandConfig)) {
-		return commandResultCache.get(commandConfig);
+	const cached = commandResultCache.get(commandConfig);
+	if (cached && Date.now() < cached.expiry) {
+		return cached.value;
 	}
 
 	const result = executeCommandUncached(commandConfig);
-	commandResultCache.set(commandConfig, result);
+	commandResultCache.set(commandConfig, { value: result, expiry: Date.now() + CACHE_TTL_MS });
 	return result;
 }
 

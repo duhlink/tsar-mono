@@ -301,10 +301,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
 			const auth = await modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok) {
+			if (!auth.ok || !auth.apiKey) {
 				// Honor StreamFn contract: encode failures in the stream, don't throw.
 				// This lets the error flow through the normal event path (message_start →
 				// message_end → turn_end → agent_end) so it gets persisted to the session.
+				// Guard both !ok (auth resolution failed) and !apiKey (no auth configured)
+				// to prevent raw HTTP 401 from reaching streamSimple.
+				const errorText = auth.ok
+					? `No API key found for ${model.provider}. Use /login or set an API key environment variable.`
+					: auth.error;
 				const errorMsg: AssistantMessage = {
 					role: "assistant",
 					content: [{ type: "text", text: "" }],
@@ -320,17 +325,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
 					stopReason: "error",
-					errorMessage: auth.error,
+					errorMessage: errorText,
 					timestamp: Date.now(),
 				};
 				const stream = createAssistantMessageEventStream();
+				// Push error asynchronously to allow the stream to be returned and
+				// event listeners to attach before the event fires.
 				queueMicrotask(() => stream.push({ type: "error", reason: "error", error: errorMsg }));
 				return stream;
 			}
 			return streamSimple(model, context, {
 				...options,
 				apiKey: auth.apiKey,
-				headers: auth.headers || options?.headers ? { ...auth.headers, ...options?.headers } : undefined,
+				headers:
+					auth.headers || options?.headers ? { ...(auth.headers ?? {}), ...(options?.headers ?? {}) } : undefined,
 			});
 		},
 		onPayload: async (payload, _model) => {
