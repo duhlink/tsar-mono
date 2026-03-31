@@ -15,6 +15,8 @@
 - Improved auth error messages to be context-aware: OAuth failures point to `/login`, custom provider failures point to `models.json` configuration, and generic `api_key` failures suggest checking API key configuration. Previously, all non-OAuth errors blindly suggested `/login` which is only valid for built-in OAuth providers.
 - Fixed `_runAutoCompaction` to surface auth failure reason in the `compaction_end` event's `errorMessage` field instead of silently swallowing the error.
 - Simplified `_getRequiredRequestAuth()` by removing duplicated OAuth check logic (now consolidated in `getApiKeyAndHeaders`) and dead code for the `ok: true, apiKey: undefined` OAuth path.
+- Fixed 11 test failures caused by incomplete pi→tsar rebrand: `extensions-discovery.test.ts` (5 fixtures) and `package-manager.test.ts` (6 fixtures) still used `pi: { extensions: [...] }` in package.json fixtures while production code (`readTsarManifest`) reads `pkg.tsar`.
+- Fixed 3 flaky `footer-data-provider.test.ts` reftable watcher tests on macOS by increasing `waitFor` default timeout from 3000ms to 5000ms and adding `{ retry: 2 }` to tests that depend on `fs.watch` event timing.
 
 ## [0.63.1] - 2026-03-27
 

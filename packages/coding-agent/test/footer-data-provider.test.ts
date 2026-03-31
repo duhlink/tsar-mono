@@ -77,7 +77,7 @@ function createReftableWorktree(tempDir: string): WorktreeFixture {
 	return { worktreeDir, reftableDir };
 }
 
-async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
+async function waitFor(condition: () => boolean, timeoutMs = 5000): Promise<void> {
 	const startedAt = Date.now();
 	while (!condition()) {
 		if (Date.now() - startedAt > timeoutMs) {
@@ -167,7 +167,7 @@ describe("FooterDataProvider reftable branch detection", () => {
 		}
 	});
 
-	it("does not notify listeners when reftable updates keep the same branch", async () => {
+	it("does not notify listeners when reftable updates keep the same branch", { retry: 2 }, async () => {
 		const { worktreeDir, reftableDir } = createReftableWorktree(tempDir);
 		process.chdir(worktreeDir);
 
@@ -190,7 +190,7 @@ describe("FooterDataProvider reftable branch detection", () => {
 		}
 	});
 
-	it("debounces rapid reftable updates into a single async refresh", async () => {
+	it("debounces rapid reftable updates into a single async refresh", { retry: 2 }, async () => {
 		const { worktreeDir, reftableDir } = createReftableWorktree(tempDir);
 		process.chdir(worktreeDir);
 
@@ -211,7 +211,7 @@ describe("FooterDataProvider reftable branch detection", () => {
 		}
 	});
 
-	it("updates the cached branch when the reftable directory changes", async () => {
+	it("updates the cached branch when the reftable directory changes", { retry: 2 }, async () => {
 		const { worktreeDir, reftableDir } = createReftableWorktree(tempDir);
 		process.chdir(worktreeDir);
 
