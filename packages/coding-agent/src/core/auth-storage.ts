@@ -443,7 +443,7 @@ export class AuthStorage {
 				// Use locked refresh to prevent race conditions
 				try {
 					const result = await this.refreshOAuthTokenWithLock(providerId);
-					if (result) {
+					if (result?.apiKey) {
 						return result.apiKey;
 					}
 				} catch (error) {

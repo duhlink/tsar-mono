@@ -1847,24 +1847,26 @@ export class AgentSession {
 
 			const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
 			if (!authResult.ok) {
+				const prefix = willRetry ? "Compaction needed for retry but auth failed: " : "";
 				this._emit({
 					type: "compaction_end",
 					reason,
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage: authResult.error,
+					errorMessage: `${prefix}${authResult.error}`,
 				});
 				return;
 			}
 			if (!authResult.apiKey) {
+				const prefix = willRetry ? "Compaction needed for retry but auth failed: " : "";
 				this._emit({
 					type: "compaction_end",
 					reason,
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage: `No API key available for ${this.model.provider}`,
+					errorMessage: `${prefix}No API key available for ${this.model.provider}`,
 				});
 				return;
 			}

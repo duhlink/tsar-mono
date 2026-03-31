@@ -80,7 +80,7 @@ To test tsar's TUI in a controlled terminal environment:
 tmux new-session -d -s tsar-test -x 80 -y 24
 
 # Start tsar from source
-tmux send-keys -t tsar-test "cd /Users/badlogic/workspaces/pi-mono && ./tsar-test.sh" Enter
+tmux send-keys -t tsar-test "cd /Users/badlogic/workspaces/tsar-mono && ./tsar-test.sh" Enter
 
 # Wait for startup, then capture output
 sleep 3 && tmux capture-pane -t tsar-test -p

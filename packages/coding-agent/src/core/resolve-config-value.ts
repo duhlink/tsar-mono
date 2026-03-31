@@ -84,7 +84,13 @@ function executeCommand(commandConfig: string): string | undefined {
 	}
 
 	const result = executeCommandUncached(commandConfig);
-	commandResultCache.set(commandConfig, { value: result, expiry: Date.now() + CACHE_TTL_MS });
+	// Only cache successful results. Failed commands (undefined) are not cached so
+	// transient failures (network hiccup, temporary service outage) retry immediately.
+	if (result !== undefined) {
+		commandResultCache.set(commandConfig, { value: result, expiry: Date.now() + CACHE_TTL_MS });
+	} else {
+		commandResultCache.delete(commandConfig);
+	}
 	return result;
 }
 

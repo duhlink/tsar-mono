@@ -559,10 +559,12 @@ describe("AgentSession retry", () => {
 		const lastMessageEntry = messageEntries[messageEntries.length - 1];
 		expect(lastMessageEntry.type).toBe("message");
 		if (lastMessageEntry.type === "message") {
-			expect((lastMessageEntry.message as AssistantMessage).stopReason).toBe("error");
-			expect((lastMessageEntry.message as AssistantMessage).errorMessage).toContain(
-				"Authentication token expired mid-stream",
-			);
+			const assistantMsg = lastMessageEntry.message as AssistantMessage;
+			expect(assistantMsg.stopReason).toBe("error");
+			expect(assistantMsg.errorMessage).toContain("Authentication token expired mid-stream");
+			// Verify partial content from before the error was preserved
+			expect(assistantMsg.content[0]).toBeDefined();
+			expect((assistantMsg.content[0] as { type: string; text: string }).text).toContain("Partial response");
 		}
 
 		// Verify the session is recoverable — a follow-up prompt should succeed
