@@ -482,6 +482,144 @@ describe("AgentSession retry", () => {
 		expect(compactionEndEvent.aborted).toBe(false);
 	});
 
+	it("mid-stream auth failure persists error to session and allows recovery", async () => {
+		// Simulate a stream that starts normally (emits start + text deltas),
+		// then fails mid-stream with an auth error — as happens when an OAuth
+		// token expires during a long response.
+		let callCount = 0;
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				callCount++;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					if (callCount === 1) {
+						// First call: emit start with partial content, then error mid-stream
+						const partial = createAssistantMessage("Partial response before auth exp");
+						stream.push({ type: "start", partial });
+						// Simulate some streaming content
+						stream.push({
+							type: "text_delta",
+							contentIndex: 0,
+							delta: " expired...",
+							partial: createAssistantMessage("Partial response before auth expired..."),
+						});
+						// Mid-stream auth failure
+						const errorMsg = createAssistantMessage("Partial response before auth expired...", {
+							stopReason: "error",
+							errorMessage: "Authentication token expired mid-stream",
+						});
+						stream.push({ type: "error", reason: "error", error: errorMsg });
+					} else {
+						// Second call (recovery): succeed normally
+						const msg = createAssistantMessage("Recovery successful");
+						stream.push({ type: "start", partial: msg });
+						stream.push({ type: "done", reason: "stop", message: msg });
+					}
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		// Collect events
+		const events: string[] = [];
+		session.subscribe((event) => {
+			events.push(event.type);
+		});
+
+		// First prompt: mid-stream auth failure
+		await session.prompt("Tell me something");
+
+		// Verify lifecycle events fired (error flows through normal stream path)
+		expect(events).toContain("message_start");
+		expect(events).toContain("message_end");
+		expect(events).toContain("turn_end");
+		expect(events).toContain("agent_end");
+
+		// Verify the error message was persisted to the session
+		const branch = sessionManager.getBranch();
+		const messageEntries = branch.filter((e) => e.type === "message");
+		const lastMessageEntry = messageEntries[messageEntries.length - 1];
+		expect(lastMessageEntry.type).toBe("message");
+		if (lastMessageEntry.type === "message") {
+			expect((lastMessageEntry.message as AssistantMessage).stopReason).toBe("error");
+			expect((lastMessageEntry.message as AssistantMessage).errorMessage).toContain(
+				"Authentication token expired mid-stream",
+			);
+		}
+
+		// Verify the session is recoverable — a follow-up prompt should succeed
+		events.length = 0;
+		await session.prompt("Try again");
+		expect(callCount).toBe(2);
+
+		// Recovery prompt should have succeeded with normal lifecycle
+		expect(events).toContain("agent_end");
+		const lastMsg = agent.state.messages[agent.state.messages.length - 1];
+		expect(lastMsg.role).toBe("assistant");
+		expect((lastMsg as any).stopReason).toBe("stop");
+	});
+
+	it("streamFn error stream for ok:true apiKey:undefined flows through lifecycle", async () => {
+		// Edge case: auth returns ok:true but apiKey is undefined (e.g., direct SDK
+		// usage without AgentSession's _assertAuth pre-flight). The streamFn guard
+		// (!auth.ok || !auth.apiKey) should catch this and return an error stream.
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				// Simulate sdk.ts streamFn when auth.ok=true but apiKey=undefined
+				const errorMsg = createAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: `No API key found for ${model.provider}. Use /login or set an API key environment variable.`,
+				});
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "error", reason: "error", error: errorMsg });
+				});
+				return stream;
+			},
+		});
+
+		const events: string[] = [];
+		agent.subscribe((event) => {
+			events.push(event.type);
+		});
+
+		await agent.prompt("test");
+
+		// Verify full lifecycle
+		expect(events).toContain("message_start");
+		expect(events).toContain("message_end");
+		expect(events).toContain("turn_end");
+		expect(events).toContain("agent_end");
+
+		// Verify error message content matches the apiKey-undefined branch
+		const lastMsg = agent.state.messages[agent.state.messages.length - 1];
+		expect(lastMsg.role).toBe("assistant");
+		expect((lastMsg as any).stopReason).toBe("error");
+		expect((lastMsg as any).errorMessage).toContain("No API key found for");
+		expect((lastMsg as any).errorMessage).toContain("/login");
+	});
+
 	it("sdk.ts streamFn error stream flows through agent event lifecycle", async () => {
 		// Verify that when getApiKeyAndHeaders returns ok:false, the error stream
 		// from sdk.ts flows through the agent's normal event lifecycle (message_start →
