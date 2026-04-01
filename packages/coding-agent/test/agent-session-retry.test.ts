@@ -672,4 +672,280 @@ describe("AgentSession retry", () => {
 		expect((lastMsg as any).stopReason).toBe("error");
 		expect((lastMsg as any).errorMessage).toContain("Authentication expired");
 	});
+
+	it("pre-stream error (Fix 1) persists to session manager", async () => {
+		// Verify the full chain: streamFn throws → catch block emits lifecycle events
+		// → AgentSession._processAgentEvent persists to SessionManager entries.
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				throw new Error("DNS resolution failed for api.anthropic.com");
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		await session.prompt("test prompt");
+
+		// Wait for async event queue to drain — the catch block emits events via
+		// Agent.emit() which queues _processAgentEvent asynchronously.
+		await new Promise((r) => setTimeout(r, 200));
+
+		// Verify the error message was persisted to session manager
+		const branch = sessionManager.getBranch();
+		const messageEntries = branch.filter((e) => e.type === "message");
+
+		// Should have: user message + error assistant message
+		expect(messageEntries.length).toBeGreaterThanOrEqual(2);
+		const lastMessageEntry = messageEntries[messageEntries.length - 1];
+		expect(lastMessageEntry.type).toBe("message");
+		if (lastMessageEntry.type === "message") {
+			const assistantMsg = lastMessageEntry.message as AssistantMessage;
+			expect(assistantMsg.role).toBe("assistant");
+			expect(assistantMsg.stopReason).toBe("error");
+			expect(assistantMsg.errorMessage).toContain("DNS resolution failed");
+		}
+	});
+
+	it("compact() on session with only error messages does not crash", async () => {
+		// Verify that compaction handles gracefully when the session context
+		// contains only error responses (no successful assistant turns).
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				// Always return error stream (non-retryable error to avoid exponential backoff)
+				const errorMsg = createAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Invalid model configuration",
+				});
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "error", reason: "error", error: errorMsg });
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+		// Runtime key lets prompt() pass _assertAuth while streamFn returns errors
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		// Generate a few error-only turns
+		await session.prompt("first");
+		await session.prompt("second");
+
+		// Remove auth so compact() fails fast at _assertAuth (not network timeout)
+		authStorage.removeRuntimeApiKey("anthropic");
+		authStorage.remove("anthropic");
+
+		// compact() should handle error-only sessions without crashing.
+		// It will throw because auth fails (expired OAuth), but should NOT
+		// crash with an unexpected error like TypeError.
+		let compactionEndEvent: any = null;
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEndEvent = event;
+			}
+		});
+
+		try {
+			await session.compact();
+		} catch {
+			// compact() throws on auth failure — expected behavior.
+		}
+
+		// compaction_end should have fired with an error
+		expect(compactionEndEvent).not.toBeNull();
+		expect(compactionEndEvent.aborted).toBe(false);
+		expect(compactionEndEvent.errorMessage).toBeDefined();
+
+		// Session should still be usable after failed compaction
+		expect(agent.state.isStreaming).toBe(false);
+	});
+
+	// ─── Integration: full auth failure defense chain ────────────────────────
+	// Tests the complete defense-in-depth chain through real AgentSession wiring:
+	//   Fix 3 (pre-flight) → Fix 4 (stream encoding) → Fix 1 (catch-all) → persistence → resume
+
+	it("integration: pre-stream auth failure persists, session resumes, then mid-stream failure persists", async () => {
+		// Phase tracking: controls what the streamFn does on each call
+		let phase: "pre-stream-error" | "recovery" | "mid-stream-error" | "final-recovery" = "pre-stream-error";
+
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+
+				if (phase === "pre-stream-error") {
+					// Simulate DNS/network failure before any stream events
+					throw new Error("DNS resolution failed for api.anthropic.com");
+				}
+
+				if (phase === "mid-stream-error") {
+					queueMicrotask(() => {
+						// Start streaming, then fail mid-stream (OAuth token expired)
+						const partial = createAssistantMessage("Partial response before token");
+						stream.push({ type: "start", partial });
+						stream.push({
+							type: "text_delta",
+							contentIndex: 0,
+							delta: " expired...",
+							partial: createAssistantMessage("Partial response before token expired..."),
+						});
+						const errorMsg = createAssistantMessage("Partial response before token expired...", {
+							stopReason: "error",
+							errorMessage: "OAuth token expired during streaming",
+						});
+						stream.push({ type: "error", reason: "error", error: errorMsg });
+					});
+					return stream;
+				}
+
+				// Recovery phases: succeed normally
+				queueMicrotask(() => {
+					const msg = createAssistantMessage(`Recovery successful (${phase})`);
+					stream.push({ type: "start", partial: msg });
+					stream.push({ type: "done", reason: "stop", message: msg });
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		// ── Scenario 1: Pre-stream failure (DNS/network error) ──
+		phase = "pre-stream-error";
+		await session.prompt("first prompt");
+		// Wait for async event queue to drain
+		await new Promise((r) => setTimeout(r, 100));
+
+		let branch = sessionManager.getBranch();
+		let messageEntries = branch.filter((e) => e.type === "message");
+		// Should have: user message + error assistant message
+		expect(messageEntries.length).toBe(2);
+		const preStreamError = messageEntries[1];
+		expect(preStreamError.type).toBe("message");
+		if (preStreamError.type === "message") {
+			expect((preStreamError.message as AssistantMessage).stopReason).toBe("error");
+			expect((preStreamError.message as AssistantMessage).errorMessage).toContain("DNS resolution failed");
+		}
+		expect(agent.state.isStreaming).toBe(false);
+
+		// ── Scenario 2: Recovery after pre-stream error ──
+		phase = "recovery";
+		await session.prompt("second prompt after recovery");
+		await new Promise((r) => setTimeout(r, 100));
+
+		branch = sessionManager.getBranch();
+		messageEntries = branch.filter((e) => e.type === "message");
+		// Should have: 4 messages (user + error + user + success)
+		expect(messageEntries.length).toBe(4);
+		const recoveryMsg = messageEntries[3];
+		if (recoveryMsg.type === "message") {
+			expect((recoveryMsg.message as AssistantMessage).stopReason).toBe("stop");
+			expect((recoveryMsg.message as AssistantMessage).content[0]).toHaveProperty(
+				"text",
+				"Recovery successful (recovery)",
+			);
+		}
+
+		// ── Scenario 3: Mid-stream failure (OAuth token expired during streaming) ──
+		phase = "mid-stream-error";
+		await session.prompt("third prompt");
+		await new Promise((r) => setTimeout(r, 100));
+
+		branch = sessionManager.getBranch();
+		messageEntries = branch.filter((e) => e.type === "message");
+		// Should have: 6 messages (prev 4 + user + mid-stream error)
+		expect(messageEntries.length).toBe(6);
+		const midStreamError = messageEntries[5];
+		if (midStreamError.type === "message") {
+			const msg = midStreamError.message as AssistantMessage;
+			expect(msg.stopReason).toBe("error");
+			expect(msg.errorMessage).toContain("OAuth token expired during streaming");
+			// Partial content from before the error should be preserved
+			expect((msg.content[0] as { type: string; text: string }).text).toContain("Partial response");
+		}
+
+		// ── Scenario 4: Recovery after mid-stream error ──
+		phase = "final-recovery";
+		await session.prompt("fourth prompt final recovery");
+		await new Promise((r) => setTimeout(r, 100));
+
+		branch = sessionManager.getBranch();
+		messageEntries = branch.filter((e) => e.type === "message");
+		// Should have: 8 messages total
+		expect(messageEntries.length).toBe(8);
+		const finalMsg = messageEntries[7];
+		if (finalMsg.type === "message") {
+			expect((finalMsg.message as AssistantMessage).stopReason).toBe("stop");
+		}
+
+		// ── Scenario 5: Session resume — verify JSONL integrity ──
+		// Build a new session context from the same session manager (simulates resume)
+		const resumeContext = sessionManager.buildSessionContext();
+		expect(resumeContext.messages.length).toBe(8);
+
+		// Verify the message sequence: user/assistant pairs with correct stop reasons
+		const roles = resumeContext.messages.map((m) => m.role);
+		expect(roles).toEqual(["user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant"]);
+
+		const stopReasons = resumeContext.messages
+			.filter((m) => m.role === "assistant")
+			.map((m) => (m as AssistantMessage).stopReason);
+		expect(stopReasons).toEqual(["error", "stop", "error", "stop"]);
+
+		// A new agent loading this context should see all 8 messages
+		const resumeAgent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+		});
+		resumeAgent.replaceMessages(resumeContext.messages);
+		expect(resumeAgent.state.messages.length).toBe(8);
+		expect(resumeAgent.state.isStreaming).toBe(false);
+	});
 });

@@ -405,5 +405,57 @@ describe("Agent", () => {
 			expect(messageEndPayload.message.stopReason).toBe("error");
 			expect(messageEndPayload.message.errorMessage).toBe("Network error");
 		});
+
+		it("sets stopReason to 'aborted' when abort signal is active during streamFn throw", async () => {
+			let agentRef: Agent;
+			const agent = new Agent({
+				streamFn: () => {
+					agentRef!.abort();
+					throw new Error("Stream aborted during auth check");
+				},
+			});
+			agentRef = agent;
+
+			await agent.prompt("test");
+
+			const lastMsg = agent.state.messages[agent.state.messages.length - 1];
+			expect(lastMsg.role).toBe("assistant");
+			expect((lastMsg as any).stopReason).toBe("aborted");
+			expect((lastMsg as any).errorMessage).toBe("Stream aborted during auth check");
+			expect(agent.state.isStreaming).toBe(false);
+		});
+
+		it("recovers from pre-stream error and handles subsequent successful prompt", async () => {
+			let callCount = 0;
+			const successMsg = createAssistantMessage("Recovery succeeded");
+
+			const agent = new Agent({
+				streamFn: () => {
+					callCount++;
+					if (callCount === 1) {
+						throw new Error("Auth failed on first attempt");
+					}
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						stream.push({ type: "start", partial: successMsg });
+						stream.push({ type: "done", reason: "stop", message: successMsg });
+					});
+					return stream;
+				},
+			});
+
+			// First prompt fails with pre-stream error
+			await agent.prompt("first");
+			expect(agent.state.error).toBe("Auth failed on first attempt");
+			expect(agent.state.messages).toHaveLength(2); // user + error
+			expect((agent.state.messages[1] as any).stopReason).toBe("error");
+			expect(agent.state.isStreaming).toBe(false);
+
+			// Second prompt succeeds — agent recovers
+			await agent.prompt("second");
+			expect(agent.state.error).toBeUndefined();
+			expect(agent.state.messages).toHaveLength(4); // user + error + user + success
+			expect((agent.state.messages[3] as any).stopReason).toBe("stop");
+		});
 	});
 });

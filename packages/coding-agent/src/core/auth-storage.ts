@@ -431,40 +431,38 @@ export class AuthStorage {
 
 		if (cred?.type === "oauth") {
 			const provider = getOAuthProvider(providerId);
-			if (!provider) {
-				// Unknown OAuth provider, can't get API key
-				return undefined;
-			}
+			if (provider) {
+				// Check if token needs refresh
+				const needsRefresh = Date.now() >= cred.expires;
 
-			// Check if token needs refresh
-			const needsRefresh = Date.now() >= cred.expires;
+				if (needsRefresh) {
+					// Use locked refresh to prevent race conditions
+					try {
+						const result = await this.refreshOAuthTokenWithLock(providerId);
+						if (result?.apiKey) {
+							return result.apiKey;
+						}
+					} catch (error) {
+						this.recordError(error);
+						// Refresh failed - re-read file to check if another instance succeeded
+						this.reload();
+						const updatedCred = this.data[providerId];
 
-			if (needsRefresh) {
-				// Use locked refresh to prevent race conditions
-				try {
-					const result = await this.refreshOAuthTokenWithLock(providerId);
-					if (result?.apiKey) {
-						return result.apiKey;
+						if (updatedCred?.type === "oauth" && Date.now() < updatedCred.expires) {
+							// Another instance refreshed successfully, use those credentials
+							return provider.getApiKey(updatedCred);
+						}
+
+						// Refresh truly failed - return undefined so model discovery skips this provider
+						// User can /login to re-authenticate (credentials preserved for retry)
+						return undefined;
 					}
-				} catch (error) {
-					this.recordError(error);
-					// Refresh failed - re-read file to check if another instance succeeded
-					this.reload();
-					const updatedCred = this.data[providerId];
-
-					if (updatedCred?.type === "oauth" && Date.now() < updatedCred.expires) {
-						// Another instance refreshed successfully, use those credentials
-						return provider.getApiKey(updatedCred);
-					}
-
-					// Refresh truly failed - return undefined so model discovery skips this provider
-					// User can /login to re-authenticate (credentials preserved for retry)
-					return undefined;
+				} else {
+					// Token not expired, use current access token
+					return provider.getApiKey(cred);
 				}
-			} else {
-				// Token not expired, use current access token
-				return provider.getApiKey(cred);
 			}
+			// Unknown OAuth provider — fall through to env var / fallback resolver
 		}
 
 		// Fall back to environment variable

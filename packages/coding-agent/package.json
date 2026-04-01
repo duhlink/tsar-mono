@@ -1,6 +1,7 @@
 {
 	"name": "@tsar/coding-agent",
 	"version": "0.63.1",
+	"private": true,
 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"tsarConfig": {

@@ -441,7 +441,8 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 			const entry = JSON.parse(line) as FileEntry;
 			entries.push(entry);
 		} catch {
-			// Skip malformed lines
+			// Skip malformed lines — warn so corrupt entries are visible
+			console.warn(`[SessionManager] Skipping malformed JSONL line during session load`);
 		}
 	}
 

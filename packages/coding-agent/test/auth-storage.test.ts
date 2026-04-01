@@ -460,4 +460,59 @@ describe("AuthStorage", () => {
 			expect(apiKey).toBe("stored-key");
 		});
 	});
+
+	describe("unknown OAuth provider fallback", () => {
+		test("OAuth credentials with unknown provider falls through to env var", async () => {
+			// Use "openai" as the provider since getEnvApiKey() maps it to OPENAI_API_KEY.
+			// Write OAuth creds for "openai" — but since openai has no registered OAuth handler
+			// (getOAuthProvider("openai") returns null), the OAuth path can't resolve.
+			// The fix ensures it falls through to the env var check.
+			const envVarName = "OPENAI_API_KEY";
+			const originalEnv = process.env[envVarName];
+
+			try {
+				process.env[envVarName] = "env-var-fallback-key";
+
+				writeAuthJson({
+					openai: {
+						type: "oauth",
+						refresh: "some-refresh-token",
+						access: "some-access-token",
+						expires: Date.now() + 60_000,
+					},
+				});
+
+				authStorage = AuthStorage.create(authJsonPath);
+
+				const apiKey = await authStorage.getApiKey("openai");
+				expect(apiKey).toBe("env-var-fallback-key");
+			} finally {
+				if (originalEnv === undefined) {
+					delete process.env[envVarName];
+				} else {
+					process.env[envVarName] = originalEnv;
+				}
+			}
+		});
+
+		test("OAuth credentials with unknown provider falls through to fallback resolver", async () => {
+			writeAuthJson({
+				"unknown-oauth-xyz": {
+					type: "oauth",
+					refresh: "some-refresh-token",
+					access: "some-access-token",
+					expires: Date.now() + 60_000,
+				},
+			});
+
+			authStorage = AuthStorage.create(authJsonPath);
+			authStorage.setFallbackResolver((provider) => {
+				if (provider === "unknown-oauth-xyz") return "fallback-resolver-key";
+				return undefined;
+			});
+
+			const apiKey = await authStorage.getApiKey("unknown-oauth-xyz");
+			expect(apiKey).toBe("fallback-resolver-key");
+		});
+	});
 });

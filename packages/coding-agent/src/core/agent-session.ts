@@ -410,7 +410,9 @@ export class AgentSession {
 		);
 
 		// Keep queue alive if an event handler fails
-		this._agentEventQueue.catch(() => {});
+		this._agentEventQueue.catch((err) => {
+			console.error("[AgentSession] Event handler error:", err?.message || err);
+		});
 	};
 
 	private _createRetryPromiseForAgentEnd(event: AgentEvent): void {
@@ -1987,13 +1989,17 @@ export class AgentSession {
 				}
 
 				setTimeout(() => {
-					this.agent.continue().catch(() => {});
+					this.agent.continue().catch((err) => {
+						console.error("[AgentSession] Post-compaction retry failed:", err?.message || err);
+					});
 				}, 100);
 			} else if (this.agent.hasQueuedMessages()) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
 				setTimeout(() => {
-					this.agent.continue().catch(() => {});
+					this.agent.continue().catch((err) => {
+						console.error("[AgentSession] Post-compaction continue failed:", err?.message || err);
+					});
 				}, 100);
 			}
 		} catch (error) {

@@ -1188,11 +1188,47 @@ describe("ModelRegistry", () => {
 				}
 			});
 
-			// Branch 2 (authHeader:true, no resolvable apiKey) is defensive code:
-			// models.json validation requires apiKey or oauth when defining models,
-			// and if apiKey is set but fails resolution, resolveConfigValueOrThrow throws
-			// before Branch 2 is reached (hitting Branch 3 instead). Branch 2 is only
-			// reachable via degenerate programmatic config — not tested here.
+			test("Branch 2: authHeader provider with no resolvable apiKey returns ok:false", async () => {
+				// Branch 2 is only reachable via programmatic config that bypasses validation.
+				// Step 1: register with models + apiKey (passes validation, creates model)
+				// Step 2: re-register with ONLY authHeader (clears apiKey from config)
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+				registry.registerProvider("auth-header-test", {
+					baseUrl: "https://example.com/v1",
+					api: "openai-chat" as Api,
+					apiKey: "placeholder-key",
+					authHeader: true,
+					models: [
+						{
+							id: "test-model",
+							name: "Test Model",
+							reasoning: false,
+							input: ["text"] as const,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 4096,
+							maxTokens: 4096,
+						},
+					],
+				});
+
+				// Re-register with only authHeader — replaces providerRequestConfigs,
+				// clearing apiKey. Models from step 1 are retained.
+				registry.registerProvider("auth-header-test", {
+					authHeader: true,
+				});
+
+				const model = registry.find("auth-header-test", "test-model");
+				expect(model).toBeDefined();
+
+				const auth = await registry.getApiKeyAndHeaders(model!);
+				expect(auth.ok).toBe(false);
+				if (!auth.ok) {
+					expect(auth.error).toContain("No API key found");
+					expect(auth.error).toContain("auth-header-test");
+					expect(auth.error).toContain("Check provider configuration");
+				}
+			});
 
 			test("getApiKeyAndHeaders returns ok:true with undefined apiKey when no auth is configured at all", async () => {
 				const registry = new ModelRegistry(authStorage, modelsJsonPath);
