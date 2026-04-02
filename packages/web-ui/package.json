@@ -47,5 +47,6 @@
 		"mini-lit"
 	],
 	"author": "Mario Zechner",
-	"license": "MIT"
+	"license": "MIT",
+	"private": true
 }

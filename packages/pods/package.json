@@ -36,5 +36,6 @@
 		"@tsar/agent-core": "^0.63.1",
 		"chalk": "^5.5.0"
 	},
-	"devDependencies": {}
+	"devDependencies": {},
+	"private": true
 }
