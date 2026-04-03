@@ -220,6 +220,7 @@ describe("resolveCliModel", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
 		expect(result.model?.id).toBe("gpt-4o");
+		expect(result.resolutionKind).toBe("registry");
 	});
 
 	test("resolves fuzzy patterns within an explicit provider", () => {
@@ -298,6 +299,23 @@ describe("resolveCliModel", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("openai/ghost-model");
+		expect(result.resolutionKind).toBe("synthetic-fallback");
+	});
+
+	test("marks inferred provider custom model ids as synthetic fallback results", () => {
+		const registry = {
+			getAll: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+
+		const result = resolveCliModel({
+			cliModel: "openai/ghost-model",
+			modelRegistry: registry,
+		});
+
+		expect(result.error).toBeUndefined();
+		expect(result.model?.provider).toBe("openai");
+		expect(result.model?.id).toBe("ghost-model");
+		expect(result.resolutionKind).toBe("synthetic-fallback");
 	});
 
 	test("returns a clear error when there are no models", () => {

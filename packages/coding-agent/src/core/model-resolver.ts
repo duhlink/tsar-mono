@@ -303,6 +303,8 @@ export async function resolveModelScope(patterns: string[], modelRegistry: Model
 	return scopedModels;
 }
 
+export type CliModelResolutionKind = "registry" | "synthetic-fallback";
+
 export interface ResolveCliModelResult {
 	model: Model<Api> | undefined;
 	thinkingLevel?: ThinkingLevel;
@@ -312,6 +314,7 @@ export interface ResolveCliModelResult {
 	 * When set, model will be undefined.
 	 */
 	error: string | undefined;
+	resolutionKind: CliModelResolutionKind | undefined;
 }
 
 /**
@@ -333,7 +336,7 @@ export function resolveCliModel(options: {
 	const { cliProvider, cliModel, modelRegistry } = options;
 
 	if (!cliModel) {
-		return { model: undefined, warning: undefined, error: undefined };
+		return { model: undefined, warning: undefined, error: undefined, resolutionKind: undefined };
 	}
 
 	// Important: use *all* models here, not just models with pre-configured auth.
@@ -344,6 +347,7 @@ export function resolveCliModel(options: {
 			model: undefined,
 			warning: undefined,
 			error: "No models available. Check your installation or add models to models.json.",
+			resolutionKind: undefined,
 		};
 	}
 
@@ -359,6 +363,7 @@ export function resolveCliModel(options: {
 			model: undefined,
 			warning: undefined,
 			error: `Unknown provider "${cliProvider}". Use --list-models to see available providers/models.`,
+			resolutionKind: undefined,
 		};
 	}
 
@@ -391,7 +396,7 @@ export function resolveCliModel(options: {
 			(m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
 		);
 		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
+			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined, resolutionKind: "registry" };
 		}
 	}
 
@@ -409,7 +414,7 @@ export function resolveCliModel(options: {
 	});
 
 	if (model) {
-		return { model, thinkingLevel, warning, error: undefined };
+		return { model, thinkingLevel, warning, error: undefined, resolutionKind: "registry" };
 	}
 
 	// If we inferred a provider from the slash but found no match within that provider,
@@ -422,7 +427,7 @@ export function resolveCliModel(options: {
 			(m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
 		);
 		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
+			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined, resolutionKind: "registry" };
 		}
 		// Also try parseModelPattern on the full input against all models
 		const fallback = parseModelPattern(cliModel, availableModels, {
@@ -434,6 +439,7 @@ export function resolveCliModel(options: {
 				thinkingLevel: fallback.thinkingLevel,
 				warning: fallback.warning,
 				error: undefined,
+				resolutionKind: "registry",
 			};
 		}
 	}
@@ -444,7 +450,13 @@ export function resolveCliModel(options: {
 			const fallbackWarning = warning
 				? `${warning} Model "${pattern}" not found for provider "${provider}". Using custom model id.`
 				: `Model "${pattern}" not found for provider "${provider}". Using custom model id.`;
-			return { model: fallbackModel, thinkingLevel: undefined, warning: fallbackWarning, error: undefined };
+			return {
+				model: fallbackModel,
+				thinkingLevel: undefined,
+				warning: fallbackWarning,
+				error: undefined,
+				resolutionKind: "synthetic-fallback",
+			};
 		}
 	}
 
@@ -454,6 +466,7 @@ export function resolveCliModel(options: {
 		thinkingLevel: undefined,
 		warning,
 		error: `Model "${display}" not found. Use --list-models to see available models.`,
+		resolutionKind: undefined,
 	};
 }
 
