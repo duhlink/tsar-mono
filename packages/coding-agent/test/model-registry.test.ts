@@ -1086,6 +1086,107 @@ describe("ModelRegistry", () => {
 				expect(count).toBe(0);
 			});
 
+
+			test("getAvailable includes headers-only providers when requests are satisfiable via headers", async () => {
+				writeRawModelsJson({
+					anthropic: {
+						baseUrl: "https://example.com/v1",
+						headers: {
+							"X-Provider-Token": "static-token",
+						},
+					},
+				});
+
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+				const model = registry.find("anthropic", "claude-sonnet-4-5");
+				expect(model).toBeDefined();
+				expect(registry.hasConfiguredAuth(model!)).toBe(true);
+				expect(registry.getAvailable().some((candidate) => candidate.provider === "anthropic")).toBe(true);
+
+				const auth = await registry.getApiKeyAndHeaders(model!);
+				expect(auth).toEqual({
+					ok: true,
+					apiKey: undefined,
+					headers: { "X-Provider-Token": "static-token" },
+				});
+			});
+
+			test("getAvailable excludes headers-only providers when a configured header is command-backed", async () => {
+				writeRawModelsJson({
+					anthropic: {
+						baseUrl: "https://example.com/v1",
+						headers: {
+							"X-Provider-Token": "!exit 1",
+						},
+					},
+				});
+
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+				const model = registry.find("anthropic", "claude-sonnet-4-5");
+				expect(model).toBeDefined();
+				expect(registry.hasConfiguredAuth(model!)).toBe(false);
+				expect(registry.getAvailable().some((candidate) => candidate.provider === "anthropic")).toBe(false);
+
+				const auth = await registry.getApiKeyAndHeaders(model!);
+				expect(auth).toEqual({
+					ok: false,
+					error: expect.stringContaining('Failed to resolve provider "anthropic" header "X-Provider-Token" from shell command'),
+				});
+			});
+
+			test("hasConfiguredAuth rejects authHeader providers when no api key source exists", () => {
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+				registry.registerProvider("auth-header-test", {
+					baseUrl: "https://example.com/v1",
+					api: "openai-chat" as Api,
+					apiKey: "placeholder-key",
+					authHeader: true,
+					models: [
+						{
+							id: "test-model",
+							name: "Test Model",
+							reasoning: false,
+							input: ["text"] as const,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 4096,
+							maxTokens: 4096,
+						},
+					],
+				});
+
+				registry.registerProvider("auth-header-test", {
+					authHeader: true,
+				});
+
+				const model = registry.find("auth-header-test", "test-model");
+				expect(model).toBeDefined();
+				expect(registry.hasConfiguredAuth(model!)).toBe(false);
+				expect(registry.getAvailable().some((candidate) => candidate.provider === "auth-header-test")).toBe(false);
+			});
+
+			test("hasConfiguredAuth accepts authHeader providers when an api key source exists", async () => {
+				writeRawModelsJson({
+					"custom-provider": {
+						...providerWithApiKey("HEADER_TOKEN"),
+						authHeader: true,
+					},
+				});
+
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+				const model = registry.find("custom-provider", "test-model");
+				expect(model).toBeDefined();
+				expect(registry.hasConfiguredAuth(model!)).toBe(true);
+				expect(registry.getAvailable().some((candidate) => candidate.provider === "custom-provider")).toBe(true);
+
+				const auth = await registry.getApiKeyAndHeaders(model!);
+				expect(auth).toEqual({
+					ok: true,
+					apiKey: "HEADER_TOKEN",
+					headers: { Authorization: "Bearer HEADER_TOKEN" },
+				});
+			});
+
 			test("getApiKeyAndHeaders resolves authHeader on every request", async () => {
 				const tokenFile = join(tempDir, "token");
 				writeFileSync(tokenFile, "token-1");

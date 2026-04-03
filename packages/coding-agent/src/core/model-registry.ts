@@ -523,14 +523,38 @@ export class ModelRegistry {
 		return this.models.find((m) => m.provider === provider && m.id === modelId);
 	}
 
+	private hasPotentialApiKeySource(provider: string): boolean {
+		return this.authStorage.hasAuth(provider) || this.providerRequestConfigs.get(provider)?.apiKey !== undefined;
+	}
+
+	private hasFastPathResolvableHeaders(headers: Record<string, string> | undefined): boolean {
+		if (!headers || Object.keys(headers).length === 0) {
+			return false;
+		}
+
+		return Object.values(headers).every((value) => !value.startsWith("!"));
+	}
+
+	private hasResolvedRequestHeaders(model: Model<Api>): boolean {
+		const providerHeaders = this.providerRequestConfigs.get(model.provider)?.headers;
+		const modelHeaders = this.modelRequestHeaders.get(this.getModelRequestKey(model.provider, model.id));
+		const configuredHeaders = [model.headers, providerHeaders, modelHeaders].filter(
+			(headers): headers is Record<string, string> => Boolean(headers && Object.keys(headers).length > 0),
+		);
+		return configuredHeaders.length > 0 && configuredHeaders.every((headers) => this.hasFastPathResolvableHeaders(headers));
+	}
+
 	/**
-	 * Get API key for a model.
+	 * Check whether request auth is configured for a model without executing
+	 * command-backed resolution or refreshing OAuth tokens.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
-		return (
-			this.authStorage.hasAuth(model.provider) ||
-			this.providerRequestConfigs.get(model.provider)?.apiKey !== undefined
-		);
+		const providerConfig = this.providerRequestConfigs.get(model.provider);
+		const hasApiKeySource = this.hasPotentialApiKeySource(model.provider);
+		if (providerConfig?.authHeader) {
+			return hasApiKeySource;
+		}
+		return hasApiKeySource || this.hasResolvedRequestHeaders(model);
 	}
 
 	private getModelRequestKey(provider: string, modelId: string): string {
