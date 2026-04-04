@@ -13,7 +13,7 @@ import { join } from "node:path";
 import stripAnsi from "strip-ansi";
 import { sanitizeBinaryOutput } from "../utils/shell.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
-import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.js";
+import { BASH_MAX_BYTES, BASH_MAX_LINES, truncateTail } from "./tools/truncate.js";
 
 // ============================================================================
 // Types
@@ -72,7 +72,7 @@ export async function executeBashWithOperations(
 ): Promise<BashResult> {
 	const outputChunks: string[] = [];
 	let outputBytes = 0;
-	const maxOutputBytes = DEFAULT_MAX_BYTES * 2;
+	const maxOutputBytes = BASH_MAX_BYTES * 2;
 
 	let tempFilePath: string | undefined;
 	let tempFileStream: WriteStream | undefined;
@@ -87,7 +87,7 @@ export async function executeBashWithOperations(
 		const text = sanitizeBinaryOutput(stripAnsi(decoder.decode(data, { stream: true }))).replace(/\r/g, "");
 
 		// Start writing to temp file if exceeds threshold
-		if (totalBytes > DEFAULT_MAX_BYTES && !tempFilePath) {
+		if (totalBytes > BASH_MAX_BYTES && !tempFilePath) {
 			const id = randomBytes(8).toString("hex");
 			tempFilePath = join(tmpdir(), `tsar-bash-${id}.log`);
 			tempFileStream = createWriteStream(tempFilePath);
@@ -125,7 +125,7 @@ export async function executeBashWithOperations(
 		}
 
 		const fullOutput = outputChunks.join("");
-		const truncationResult = truncateTail(fullOutput);
+		const truncationResult = truncateTail(fullOutput, { maxBytes: BASH_MAX_BYTES, maxLines: BASH_MAX_LINES });
 		const cancelled = options?.signal?.aborted ?? false;
 
 		return {
@@ -143,7 +143,7 @@ export async function executeBashWithOperations(
 		// Check if it was an abort
 		if (options?.signal?.aborted) {
 			const fullOutput = outputChunks.join("");
-			const truncationResult = truncateTail(fullOutput);
+			const truncationResult = truncateTail(fullOutput, { maxBytes: BASH_MAX_BYTES, maxLines: BASH_MAX_LINES });
 			return {
 				output: truncationResult.truncated ? truncationResult.content : fullOutput,
 				exitCode: undefined,

@@ -14,10 +14,14 @@ import { getShellConfig, getShellEnv, killProcessTree } from "../../utils/shell.
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { getTextOutput, invalidArgText, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
-import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
-
-const BASH_MAX_BYTES = 12 * 1024; // 12KB per-tool ceiling for bash output
-const BASH_MAX_LINES = 500; // 500-line per-tool ceiling for bash output
+import {
+	BASH_MAX_BYTES,
+	BASH_MAX_LINES,
+	DEFAULT_MAX_BYTES,
+	formatSize,
+	type TruncationResult,
+	truncateTail,
+} from "./truncate.js";
 
 /**
  * Generate a unique temp file path for bash output.

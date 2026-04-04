@@ -12,6 +12,12 @@ export const DEFAULT_MAX_LINES = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
 export const GREP_MAX_LINE_LENGTH = 500; // Max chars per grep match line
 
+// Per-tool truncation ceilings (tighter than global backstop)
+export const BASH_MAX_BYTES = 12 * 1024; // 12KB
+export const BASH_MAX_LINES = 500;
+export const READ_MAX_BYTES = 20 * 1024; // 20KB
+export const READ_MAX_LINES = 1000;
+
 export interface TruncationResult {
 	/** The truncated content */
 	content: string;

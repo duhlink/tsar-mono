@@ -443,6 +443,46 @@ describe("Coding Agent Tools", () => {
 			expect(result.exitCode).toBe(0);
 			expect(result.output).toBe("red\n");
 		});
+
+		it("should truncate bash output exceeding line limit", async () => {
+			// seq 1 1000 produces 1000 lines — exceeds BASH_MAX_LINES (500)
+			const result = await bashTool.execute("test-bash-trunc-1", {
+				command: "seq 1 1000",
+			});
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Showing lines");
+			expect(result.details?.truncation).toBeDefined();
+			expect(result.details?.truncation?.truncated).toBe(true);
+			expect(result.details?.truncation?.truncatedBy).toBe("lines");
+		});
+
+		it("should truncate bash output exceeding byte limit", async () => {
+			// 300 lines × ~100 chars ≈ 30KB — exceeds BASH_MAX_BYTES (12KB)
+			const result = await bashTool.execute("test-bash-trunc-2", {
+				command:
+					"yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx | head -300",
+			});
+			const output = getTextOutput(result);
+
+			expect(output).toMatch(/\d+\.?\d*KB limit/);
+			expect(result.details?.truncation).toBeDefined();
+			expect(result.details?.truncation?.truncated).toBe(true);
+			expect(result.details?.truncation?.truncatedBy).toBe("bytes");
+		});
+
+		it("should populate truncation details correctly for bash output", async () => {
+			// 1000 lines triggers line truncation at BASH_MAX_LINES (500)
+			const result = await bashTool.execute("test-bash-trunc-3", {
+				command: "seq 1 1000",
+			});
+
+			expect(result.details?.truncation).toBeDefined();
+			expect(result.details?.truncation?.truncated).toBe(true);
+			expect(result.details?.truncation?.truncatedBy).toBe("lines");
+			expect(result.details?.truncation?.totalLines).toBeGreaterThan(500);
+			expect(result.details?.truncation?.outputLines).toBe(500);
+		});
 	});
 
 	describe("grep tool", () => {
