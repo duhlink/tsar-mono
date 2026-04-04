@@ -5,8 +5,8 @@
 import { Container, Loader, Spacer, Text, type TUI } from "@tsar/tui";
 import stripAnsi from "strip-ansi";
 import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
+	BASH_MAX_BYTES,
+	BASH_MAX_LINES,
 	type TruncationResult,
 	truncateTail,
 } from "../../../core/tools/truncate.js";
@@ -120,8 +120,8 @@ export class BashExecutionComponent extends Container {
 		// Apply truncation for LLM context limits (same limits as bash tool)
 		const fullOutput = this.outputLines.join("\n");
 		const contextTruncation = truncateTail(fullOutput, {
-			maxLines: DEFAULT_MAX_LINES,
-			maxBytes: DEFAULT_MAX_BYTES,
+			maxLines: BASH_MAX_LINES,
+			maxBytes: BASH_MAX_BYTES,
 		});
 
 		// Get the lines to potentially display (after context truncation)

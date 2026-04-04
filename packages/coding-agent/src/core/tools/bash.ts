@@ -17,7 +17,6 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import {
 	BASH_MAX_BYTES,
 	BASH_MAX_LINES,
-	DEFAULT_MAX_BYTES,
 	formatSize,
 	type TruncationResult,
 	truncateTail,
@@ -252,7 +251,7 @@ function rebuildBashResultRenderComponent(
 				warnings.push(`Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines`);
 			} else {
 				warnings.push(
-					`Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)`,
+					`Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes)} limit)`,
 				);
 			}
 		}
