@@ -14,7 +14,10 @@ import { getShellConfig, getShellEnv, killProcessTree } from "../../utils/shell.
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { getTextOutput, invalidArgText, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
+import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
+
+const BASH_MAX_BYTES = 12 * 1024; // 12KB per-tool ceiling for bash output
+const BASH_MAX_LINES = 500; // 500-line per-tool ceiling for bash output
 
 /**
  * Generate a unique temp file path for bash output.
@@ -269,7 +272,7 @@ export function createBashToolDefinition(
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${BASH_MAX_LINES} lines or ${BASH_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
 		async execute(
@@ -290,12 +293,12 @@ export function createBashToolDefinition(
 				let totalBytes = 0;
 				const chunks: Buffer[] = [];
 				let chunksBytes = 0;
-				const maxChunksBytes = DEFAULT_MAX_BYTES * 2;
+				const maxChunksBytes = BASH_MAX_BYTES * 2;
 
 				const handleData = (data: Buffer) => {
 					totalBytes += data.length;
 					// Start writing to a temp file once output exceeds the in-memory threshold.
-					if (totalBytes > DEFAULT_MAX_BYTES && !tempFilePath) {
+					if (totalBytes > BASH_MAX_BYTES && !tempFilePath) {
 						tempFilePath = getTempFilePath();
 						tempFileStream = createWriteStream(tempFilePath);
 						// Write all buffered chunks to the file.
@@ -315,7 +318,7 @@ export function createBashToolDefinition(
 					if (onUpdate) {
 						const fullBuffer = Buffer.concat(chunks);
 						const fullText = fullBuffer.toString("utf-8");
-						const truncation = truncateTail(fullText);
+						const truncation = truncateTail(fullText, { maxBytes: BASH_MAX_BYTES, maxLines: BASH_MAX_LINES });
 						onUpdate({
 							content: [{ type: "text", text: truncation.content || "" }],
 							details: {
@@ -339,7 +342,7 @@ export function createBashToolDefinition(
 						const fullBuffer = Buffer.concat(chunks);
 						const fullOutput = fullBuffer.toString("utf-8");
 						// Apply tail truncation for the final display payload.
-						const truncation = truncateTail(fullOutput);
+						const truncation = truncateTail(fullOutput, { maxBytes: BASH_MAX_BYTES, maxLines: BASH_MAX_LINES });
 						let outputText = truncation.content || "(no output)";
 						let details: BashToolDetails | undefined;
 						if (truncation.truncated) {
@@ -354,7 +357,7 @@ export function createBashToolDefinition(
 							} else if (truncation.truncatedBy === "lines") {
 								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${tempFilePath}]`;
 							} else {
-								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${tempFilePath}]`;
+								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(BASH_MAX_BYTES)} limit). Full output: ${tempFilePath}]`;
 							}
 						}
 						if (exitCode !== 0 && exitCode !== null) {
