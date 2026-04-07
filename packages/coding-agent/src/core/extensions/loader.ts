@@ -66,20 +66,31 @@ function getAliases(): Record<string, string> {
 	const typeboxRoot = typeboxEntry.replace(/[\\/]build[\\/]cjs[\\/]index\.js$/, "");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
-	const resolveWorkspaceOrImport = (workspaceRelativePath: string, specifier: string): string => {
-		const workspacePath = path.join(packagesRoot, workspaceRelativePath);
-		if (fs.existsSync(workspacePath)) {
-			return workspacePath;
+	const resolveImportPath = (specifier: string): string => {
+		if (typeof import.meta.resolve === "function") {
+			return fileURLToPath(import.meta.resolve(specifier));
 		}
-		return fileURLToPath(import.meta.resolve(specifier));
+		return require.resolve(specifier);
 	};
+	const resolveWorkspaceOrImport = (workspaceRelativePaths: string[], specifier: string): string => {
+		for (const workspaceRelativePath of workspaceRelativePaths) {
+			const workspacePath = path.join(packagesRoot, workspaceRelativePath);
+			if (fs.existsSync(workspacePath)) {
+				return workspacePath;
+			}
+		}
+		return resolveImportPath(specifier);
+	};
+	const codingAgentIndex = fs.existsSync(packageIndex)
+		? packageIndex
+		: path.resolve(__dirname, "../..", "index.ts");
 
 	_aliases = {
-		"@tsar/coding-agent": packageIndex,
-		"@tsar/agent-core": resolveWorkspaceOrImport("agent/dist/index.js", "@tsar/agent-core"),
-		"@tsar/tui": resolveWorkspaceOrImport("tui/dist/index.js", "@tsar/tui"),
-		"@tsar/ai": resolveWorkspaceOrImport("ai/dist/index.js", "@tsar/ai"),
-		"@tsar/ai/oauth": resolveWorkspaceOrImport("ai/dist/oauth.js", "@tsar/ai/oauth"),
+		"@tsar/coding-agent": codingAgentIndex,
+		"@tsar/agent-core": resolveWorkspaceOrImport(["agent/dist/index.js", "agent/src/index.ts"], "@tsar/agent-core"),
+		"@tsar/tui": resolveWorkspaceOrImport(["tui/dist/index.js", "tui/src/index.ts"], "@tsar/tui"),
+		"@tsar/ai": resolveWorkspaceOrImport(["ai/dist/index.js", "ai/src/index.ts"], "@tsar/ai"),
+		"@tsar/ai/oauth": resolveWorkspaceOrImport(["ai/dist/oauth.js", "ai/src/oauth.ts"], "@tsar/ai/oauth"),
 		"@sinclair/typebox": typeboxRoot,
 	};
 
