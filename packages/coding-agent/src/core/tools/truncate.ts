@@ -64,6 +64,13 @@ export function formatSize(bytes: number): string {
 	}
 }
 
+function getContentLines(content: string): string[] {
+	if (content === "") {
+		return [];
+	}
+	return content.endsWith("\n") ? content.slice(0, -1).split("\n") : content.split("\n");
+}
+
 /**
  * Truncate content from the head (keep first N lines/bytes).
  * Suitable for file reads where you want to see the beginning.
@@ -76,7 +83,7 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 
 	const totalBytes = Buffer.byteLength(content, "utf-8");
-	const lines = content.split("\n");
+	const lines = getContentLines(content);
 	const totalLines = lines.length;
 
 	// Check if no truncation needed
@@ -166,7 +173,7 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 
 	const totalBytes = Buffer.byteLength(content, "utf-8");
-	const lines = content.split("\n");
+	const lines = getContentLines(content);
 	const totalLines = lines.length;
 
 	// Check if no truncation needed

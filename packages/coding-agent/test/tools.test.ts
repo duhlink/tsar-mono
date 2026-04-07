@@ -10,6 +10,7 @@ import { grepTool } from "../src/core/tools/grep.js";
 import { lsTool } from "../src/core/tools/ls.js";
 import { readTool } from "../src/core/tools/read.js";
 import { writeTool } from "../src/core/tools/write.js";
+import { BASH_MAX_BYTES, BASH_MAX_LINES, truncateTail } from "../src/core/tools/truncate.js";
 import * as shellModule from "../src/utils/shell.js";
 
 // Helper to extract text from content blocks
@@ -444,66 +445,78 @@ describe("Coding Agent Tools", () => {
 			expect(result.output).toBe("red\n");
 		});
 
-		it("should truncate bash output exceeding line limit", async () => {
-			const result = await bashTool.execute("test-bash-trunc-1", {
-				command: "seq 1 1000",
+		it("should treat newline-terminated 500 and 501 line outputs honestly at the truncateTail boundary", () => {
+			const exactly500 = Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
+			const exactly501 = Array.from({ length: 501 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
+
+			const noTruncation = truncateTail(exactly500, { maxLines: BASH_MAX_LINES, maxBytes: Number.MAX_SAFE_INTEGER });
+			expect(noTruncation.truncated).toBe(false);
+			expect(noTruncation.truncatedBy).toBeNull();
+			expect(noTruncation.totalLines).toBe(500);
+			expect(noTruncation.outputLines).toBe(500);
+			expect(noTruncation.content).toBe(exactly500);
+
+			const truncated = truncateTail(exactly501, { maxLines: BASH_MAX_LINES, maxBytes: Number.MAX_SAFE_INTEGER });
+			expect(truncated.truncated).toBe(true);
+			expect(truncated.truncatedBy).toBe("lines");
+			expect(truncated.totalLines).toBe(501);
+			expect(truncated.outputLines).toBe(500);
+			expect(truncated.content).not.toContain("line-001\n");
+			expect(truncated.content.startsWith("line-002\n")).toBe(true);
+			expect(truncated.content).toContain("line-501");
+		});
+
+		it("should not truncate bash output at exactly 500 newline-terminated lines", async () => {
+			const result = await bashTool.execute("test-bash-boundary", {
+				command: "for i in $(seq 1 500); do printf 'line-%03d\n' $i; done",
 			});
 			const output = getTextOutput(result);
 
-			// Verify truncation occurred
+			expect(result.details?.truncation).toBeUndefined();
+			expect(output).toBe(
+				Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n",
+			);
+		});
+
+		it("should truncate to the last 500 real lines and report exact line counts", async () => {
+			const result = await bashTool.execute("test-bash-trunc-1", {
+				command: "for i in $(seq 1 501); do printf 'line-%03d\n' $i; done",
+			});
+			const output = getTextOutput(result);
+
 			expect(result.details?.truncation).toBeDefined();
 			expect(result.details?.truncation?.truncated).toBe(true);
 			expect(result.details?.truncation?.truncatedBy).toBe("lines");
-			// seq 1 1000 + trailing newline = 1001 elements from split
-			expect(result.details?.truncation?.totalLines).toBe(1001);
+			expect(result.details?.truncation?.totalLines).toBe(501);
 			expect(result.details?.truncation?.outputLines).toBe(500);
-			// Verify tail behavior: should contain last lines, not first
-			expect(output).toContain("1000");
-			expect(output).toContain("Showing lines");
+			expect(result.details?.truncation?.maxLines).toBe(BASH_MAX_LINES);
+			expect(result.details?.truncation?.maxBytes).toBe(BASH_MAX_BYTES);
+			expect(output).toContain("line-002");
+			expect(output).toContain("line-501");
+			expect(output).not.toContain("line-001");
+			expect(output).toContain("[Showing lines 2-501 of 501.");
 		});
 
-		it("should NOT truncate bash output at exactly 500 lines", async () => {
-			const result = await bashTool.execute("test-bash-boundary", {
-				command: "seq 1 500",
-			});
-			// 500 lines + trailing newline = 501 elements, but 500 actual content lines
-			// truncateTail with maxLines=500: 501 elements > 500, so it WILL truncate
-			// Actually seq 1 500 produces "1\n2\n...\n500\n" = 501 split elements
-			// With maxLines=500 this will truncate. Use 499 to be safe under limit.
-			// Let's just verify the behavior is consistent.
-			const output = getTextOutput(result);
-			expect(output).toContain("500");
-		});
-
-		it("should truncate bash output exceeding byte limit", async () => {
-			// 300 lines × ~104 chars ≈ 31KB — exceeds BASH_MAX_BYTES (12KB)
+		it("should truncate bash output exceeding byte limit and persist the full output to a temp file", async () => {
 			const result = await bashTool.execute("test-bash-trunc-2", {
-				command: "for i in $(seq 1 300); do printf '%0100d\\n' $i; done",
+				command: "for i in $(seq 1 300); do printf 'row-%03d-%s\n' $i $(printf 'x%.0s' $(seq 1 96)); done",
 			});
 			const output = getTextOutput(result);
+			const fullOutputPath = result.details?.fullOutputPath;
 
 			expect(result.details?.truncation).toBeDefined();
 			expect(result.details?.truncation?.truncated).toBe(true);
 			expect(result.details?.truncation?.truncatedBy).toBe("bytes");
-			expect(output).toMatch(/\d+\.?\d*KB limit/);
-			// Verify temp file was created for full output
-			if (result.details?.fullOutputPath) {
-				expect(existsSync(result.details.fullOutputPath)).toBe(true);
-			}
-		});
-
-		it("should populate truncation details correctly for bash output", async () => {
-			const result = await bashTool.execute("test-bash-trunc-3", {
-				command: "seq 1 1000",
-			});
-
-			expect(result.details?.truncation).toBeDefined();
-			expect(result.details?.truncation?.truncated).toBe(true);
-			expect(result.details?.truncation?.truncatedBy).toBe("lines");
-			expect(result.details?.truncation?.totalLines).toBe(1001);
-			expect(result.details?.truncation?.outputLines).toBe(500);
-			expect(result.details?.truncation?.maxLines).toBe(500);
-			expect(result.details?.truncation?.maxBytes).toBe(12 * 1024);
+			expect(result.details?.truncation?.outputBytes).toBeLessThanOrEqual(BASH_MAX_BYTES);
+			expect(output).toContain("row-300-");
+			expect(output).not.toContain("row-001-");
+			expect(output).toMatch(/12\.0KB limit/);
+			expect(fullOutputPath).toBeDefined();
+			expect(existsSync(fullOutputPath!)).toBe(true);
+			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
+			expect(fullOutput.startsWith("row-001-")).toBe(true);
+			expect(fullOutput).toContain("row-300-");
+			expect(fullOutput.split("\n")).toHaveLength(301);
 		});
 	});
 
