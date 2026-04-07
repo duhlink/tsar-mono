@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@tsar/agent-core";
-import { type AssistantMessage, getModel } from "@tsar/ai";
+import * as compactionModule from "../src/core/compaction/index.js";
+import { type AssistantMessage, getModel, type ToolResultMessage } from "@tsar/ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -121,6 +122,164 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await vi.advanceTimersByTimeAsync(100);
 
 		expect(continueSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("should rebuild overflow retry context from the pre-error branch and request a continue-safe cut point", async () => {
+		const model = session.model!;
+		const baseTimestamp = Date.now();
+
+		const successfulAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "previous response" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 10,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 20,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: baseTimestamp + 1,
+		};
+
+		const overflowAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+			timestamp: baseTimestamp + 3,
+		};
+
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "old prompt" }],
+			timestamp: baseTimestamp,
+		});
+		sessionManager.appendMessage(successfulAssistant);
+		const retryUserId = sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "retry me after compaction" }],
+			timestamp: baseTimestamp + 2,
+		});
+		sessionManager.appendMessage(overflowAssistant);
+
+		session.agent.replaceMessages([
+			{ role: "user", content: [{ type: "text", text: "old prompt" }], timestamp: baseTimestamp },
+			successfulAssistant,
+			{ role: "user", content: [{ type: "text", text: "retry me after compaction" }], timestamp: baseTimestamp + 2 },
+			overflowAssistant,
+		]);
+
+		const prepareCompactionSpy = vi.spyOn(compactionModule, "prepareCompaction").mockReturnValue({ dummy: true } as any);
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: retryUserId,
+			tokensBefore: 100,
+			details: {},
+		});
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("overflow", true);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(prepareCompactionSpy).toHaveBeenCalledWith(expect.any(Array), expect.any(Object), {
+			allowAssistantCutPoints: false,
+		});
+
+		const rebuiltContext = sessionManager.buildSessionContext();
+		expect(rebuiltContext.messages[rebuiltContext.messages.length - 1]?.role).toBe("user");
+		expect(
+			rebuiltContext.messages.some(
+				(message) => message.role === "assistant" && (message as AssistantMessage).stopReason === "error",
+			),
+		).toBe(false);
+		expect(continueSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("should drop trailing assistant messages while preserving a tool-result retry tail", () => {
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "tool-1",
+			toolName: "read",
+			content: [{ type: "text", text: "retry tail" }],
+			isError: false,
+			timestamp: Date.now(),
+		};
+
+		session.agent.replaceMessages([
+			{ role: "user", content: [{ type: "text", text: "prompt" }], timestamp: Date.now() - 2000 },
+			toolResult,
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "partial response" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error",
+				errorMessage: "prompt is too long",
+				timestamp: Date.now() - 500,
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "stale retry artifact" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "aborted",
+				timestamp: Date.now() - 100,
+			},
+		]);
+
+		const normalize = (
+			session as unknown as {
+				_normalizePostCompactionRetryMessages: () => boolean;
+			}
+		)._normalizePostCompactionRetryMessages.bind(session);
+
+		expect(normalize()).toBe(true);
+		expect(session.agent.state.messages).toHaveLength(2);
+		expect(session.agent.state.messages[1]).toMatchObject({
+			role: "toolResult",
+			toolCallId: "tool-1",
+			toolName: "read",
+		});
 	});
 
 	it("should not compact repeatedly after overflow recovery already attempted", async () => {

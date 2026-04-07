@@ -289,14 +289,34 @@ export function estimateTokens(message: AgentMessage): number {
 	return 0;
 }
 
+export interface FindCutPointOptions {
+	allowAssistantCutPoints?: boolean;
+}
+
+function isTurnStartEntry(entry: SessionEntry): boolean {
+	if (entry.type === "branch_summary" || entry.type === "custom_message") {
+		return true;
+	}
+
+	if (entry.type !== "message") {
+		return false;
+	}
+
+	return entry.message.role === "user" || entry.message.role === "bashExecution";
+}
+
 /**
- * Find valid cut points: indices of user, assistant, custom, or bashExecution messages.
+ * Find valid cut points: indices of user-like messages and, optionally, assistant messages.
  * Never cut at tool results (they must follow their tool call).
- * When we cut at an assistant message with tool calls, its tool results follow it
- * and will be kept.
- * BashExecutionMessage is treated like a user message (user-initiated context).
+ * When assistant cut points are enabled, cutting at an assistant message with tool calls
+ * keeps the following tool results.
  */
-function findValidCutPoints(entries: SessionEntry[], startIndex: number, endIndex: number): number[] {
+function findValidCutPoints(
+	entries: SessionEntry[],
+	startIndex: number,
+	endIndex: number,
+	options: FindCutPointOptions = {},
+): number[] {
 	const cutPoints: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
 		const entry = entries[i];
@@ -309,8 +329,12 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 					case "branchSummary":
 					case "compactionSummary":
 					case "user":
-					case "assistant":
 						cutPoints.push(i);
+						break;
+					case "assistant":
+						if (options.allowAssistantCutPoints !== false) {
+							cutPoints.push(i);
+						}
 						break;
 					case "toolResult":
 						break;
@@ -328,7 +352,6 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 				break;
 		}
 
-		// branch_summary and custom_message are user-role messages, valid cut points
 		if (entry.type === "branch_summary" || entry.type === "custom_message") {
 			cutPoints.push(i);
 		}
@@ -337,22 +360,13 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 }
 
 /**
- * Find the user message (or bashExecution) that starts the turn containing the given entry index.
+ * Find the user-like entry that starts the turn containing the given entry index.
  * Returns -1 if no turn start found before the index.
- * BashExecutionMessage is treated like a user message for turn boundaries.
  */
 export function findTurnStartIndex(entries: SessionEntry[], entryIndex: number, startIndex: number): number {
 	for (let i = entryIndex; i >= startIndex; i--) {
-		const entry = entries[i];
-		// branch_summary and custom_message are user-role messages, can start a turn
-		if (entry.type === "branch_summary" || entry.type === "custom_message") {
+		if (isTurnStartEntry(entries[i])) {
 			return i;
-		}
-		if (entry.type === "message") {
-			const role = entry.message.role;
-			if (role === "user" || role === "bashExecution") {
-				return i;
-			}
 		}
 	}
 	return -1;
@@ -388,8 +402,9 @@ export function findCutPoint(
 	startIndex: number,
 	endIndex: number,
 	keepRecentTokens: number,
+	options: FindCutPointOptions = {},
 ): CutPointResult {
-	const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
+	const cutPoints = findValidCutPoints(entries, startIndex, endIndex, options);
 
 	if (cutPoints.length === 0) {
 		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
@@ -437,13 +452,13 @@ export function findCutPoint(
 
 	// Determine if this is a split turn
 	const cutEntry = entries[cutIndex];
-	const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
-	const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
+	const isTurnStart = isTurnStartEntry(cutEntry);
+	const turnStartIndex = isTurnStart ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
 
 	return {
 		firstKeptEntryIndex: cutIndex,
 		turnStartIndex,
-		isSplitTurn: !isUserMessage && turnStartIndex !== -1,
+		isSplitTurn: !isTurnStart && turnStartIndex !== -1,
 	};
 }
 
@@ -609,9 +624,12 @@ export interface CompactionPreparation {
 	settings: CompactionSettings;
 }
 
+export interface PrepareCompactionOptions extends FindCutPointOptions {}
+
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
+	options: PrepareCompactionOptions = {},
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -637,7 +655,7 @@ export function prepareCompaction(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens, options);
 
 	// Get UUID of first kept entry
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];

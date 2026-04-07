@@ -307,6 +307,23 @@ describe("findCutPoint", () => {
 			expect(result.turnStartIndex).toBe(2); // Turn 2 starts at index 2
 		}
 	});
+
+	it("should keep overflow retry cut points on user turns when assistant cut points are disabled", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Turn 1")),
+			createMessageEntry(createAssistantMessage("A1", createMockUsage(0, 100, 1000, 0))),
+			createMessageEntry(createUserMessage("Turn 2")),
+			createMessageEntry(createAssistantMessage("A2", createMockUsage(0, 100, 8000, 0))),
+		];
+
+		const result = findCutPoint(entries, 0, entries.length, 3000, {
+			allowAssistantCutPoints: false,
+		});
+
+		expect(result.isSplitTurn).toBe(false);
+		expect((entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role).toBe("user");
+		expect(result.firstKeptEntryIndex % 2).toBe(0);
+	});
 });
 
 describe("buildSessionContext", () => {

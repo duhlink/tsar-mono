@@ -65,7 +65,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
+import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
@@ -1876,7 +1876,9 @@ export class AgentSession {
 
 			const pathEntries = this.sessionManager.getBranch();
 
-			const preparation = prepareCompaction(pathEntries, settings);
+			const preparation = prepareCompaction(pathEntries, settings, {
+				allowAssistantCutPoints: !willRetry,
+			});
 			if (!preparation) {
 				this._emit({
 					type: "compaction_end",
@@ -1955,6 +1957,10 @@ export class AgentSession {
 				return;
 			}
 
+			const retryCompactionParentId = willRetry ? this._getRetryCompactionParentId(pathEntries) : undefined;
+			if (retryCompactionParentId !== undefined) {
+				this.sessionManager.branch(retryCompactionParentId);
+			}
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
@@ -1973,6 +1979,19 @@ export class AgentSession {
 				});
 			}
 
+			if (willRetry && !this._normalizePostCompactionRetryMessages()) {
+				this._emit({
+					type: "compaction_end",
+					reason,
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						"Context overflow recovery failed: post-compaction context did not contain a retryable user or tool-result tail.",
+				});
+				return;
+			}
+
 			const result: CompactionResult = {
 				summary,
 				firstKeptEntryId,
@@ -1982,12 +2001,6 @@ export class AgentSession {
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
-				const messages = this.agent.state.messages;
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
-					this.agent.replaceMessages(messages.slice(0, -1));
-				}
-
 				setTimeout(() => {
 					this.agent.continue().catch((err) => {
 						console.error("[AgentSession] Post-compaction retry failed:", err?.message || err);
@@ -2018,6 +2031,42 @@ export class AgentSession {
 		} finally {
 			this._autoCompactionAbortController = undefined;
 		}
+	}
+
+	private _getRetryCompactionParentId(pathEntries: SessionEntry[]): string | undefined {
+		const lastEntry = pathEntries[pathEntries.length - 1];
+		if (!lastEntry || lastEntry.type !== "message" || lastEntry.message.role !== "assistant") {
+			return undefined;
+		}
+
+		const assistantMessage = lastEntry.message as AssistantMessage;
+		if (assistantMessage.stopReason !== "error") {
+			return undefined;
+		}
+
+		return lastEntry.parentId ?? undefined;
+	}
+
+	private _normalizePostCompactionRetryMessages(): boolean {
+		const normalizedMessages = [...this.agent.state.messages];
+
+		while (normalizedMessages.length > 0) {
+			const lastMessage = normalizedMessages[normalizedMessages.length - 1];
+			if (lastMessage.role !== "assistant") {
+				break;
+			}
+			normalizedMessages.pop();
+		}
+
+		if (normalizedMessages.length === 0) {
+			return false;
+		}
+
+		if (normalizedMessages.length !== this.agent.state.messages.length) {
+			this.agent.replaceMessages(normalizedMessages);
+		}
+
+		return normalizedMessages[normalizedMessages.length - 1].role !== "assistant";
 	}
 
 	/**

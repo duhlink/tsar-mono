@@ -2455,7 +2455,7 @@ export class InteractiveMode {
 					}
 				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
-				this.ui.requestRender();
+				this.ui.requestRender(event.willRetry);
 				break;
 			}
 
