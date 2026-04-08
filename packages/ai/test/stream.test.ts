@@ -476,8 +476,8 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic Provider (claude-3-5-haiku-20241022)", () => {
-		const model = getModel("anthropic", "claude-3-5-haiku-20241022");
+	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic Provider (claude-sonnet-4-20250514)", () => {
+		const model = getModel("anthropic", "claude-sonnet-4-20250514");
 
 		it("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(model, { thinkingEnabled: true });
@@ -871,9 +871,13 @@ describe("Generate E2E Tests", () => {
 			await handleThinking(model, { apiKey: anthropicOAuthToken, thinkingEnabled: true });
 		});
 
-		it.skipIf(!anthropicOAuthToken)("should handle multi-turn with thinking and tools", { retry: 3, timeout: 30000 }, async () => {
-			await multiTurn(model, { apiKey: anthropicOAuthToken, thinkingEnabled: true });
-		});
+		it.skipIf(!anthropicOAuthToken)(
+			"should handle multi-turn with thinking and tools",
+			{ retry: 3, timeout: 30000 },
+			async () => {
+				await multiTurn(model, { apiKey: anthropicOAuthToken, thinkingEnabled: true });
+			},
+		);
 
 		it.skipIf(!anthropicOAuthToken)("should handle image input", { retry: 3 }, async () => {
 			await handleImage(model, { apiKey: anthropicOAuthToken });
@@ -1139,9 +1143,13 @@ describe("Generate E2E Tests", () => {
 			await handleThinking(llm, { apiKey: openaiCodexToken, reasoningEffort: "high" });
 		});
 
-		it.skipIf(!openaiCodexToken)("should handle multi-turn with thinking and tools", { retry: 3, timeout: 30000 }, async () => {
-			await multiTurn(llm, { apiKey: openaiCodexToken, reasoningEffort: "high" });
-		});
+		it.skipIf(!openaiCodexToken)(
+			"should handle multi-turn with thinking and tools",
+			{ retry: 3, timeout: 30000 },
+			async () => {
+				await multiTurn(llm, { apiKey: openaiCodexToken, reasoningEffort: "high" });
+			},
+		);
 
 		it.skipIf(!openaiCodexToken)("should handle image input", { retry: 3 }, async () => {
 			await handleImage(llm, { apiKey: openaiCodexToken });
@@ -1168,9 +1176,13 @@ describe("Generate E2E Tests", () => {
 			await handleThinking(llm, { ...wsOptions, reasoningEffort: "high" });
 		});
 
-		it.skipIf(!openaiCodexToken)("should handle multi-turn with thinking and tools", { retry: 3, timeout: 30000 }, async () => {
-			await multiTurn(llm, { ...wsOptions, reasoningEffort: "high" });
-		});
+		it.skipIf(!openaiCodexToken)(
+			"should handle multi-turn with thinking and tools",
+			{ retry: 3, timeout: 30000 },
+			async () => {
+				await multiTurn(llm, { ...wsOptions, reasoningEffort: "high" });
+			},
+		);
 
 		it.skipIf(!openaiCodexToken)("should handle image input", { retry: 3 }, async () => {
 			await handleImage(llm, wsOptions);
