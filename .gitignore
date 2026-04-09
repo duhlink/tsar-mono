@@ -35,3 +35,8 @@ out.html
 packages/coding-agent/binaries/
 todo.md
 plans/
+
+# Local tsar runtime artifacts
+.tsar/logs/
+.tsar/session.lock
+workflow/delegation-tree.json
