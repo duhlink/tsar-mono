@@ -13,6 +13,7 @@ import { waitForChildProcess } from "../../utils/child-process.js";
 import { getShellConfig, getShellEnv, killProcessTree } from "../../utils/shell.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { getTextOutput, invalidArgText, str } from "./render-utils.js";
+import { resolveRuntimeCwd } from "./path-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import {
 	BASH_MAX_BYTES,
@@ -181,6 +182,16 @@ function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function prependRecoveryNotice(text: string, recoveryNotice?: string): string {
+	if (!recoveryNotice) {
+		return text;
+	}
+	if (!text) {
+		return recoveryNotice;
+	}
+	return `${recoveryNotice}\n\n${text}`;
+}
+
 function formatBashCall(args: { command?: string; timeout?: number } | undefined): string {
 	const command = str(args?.command);
 	const timeout = args?.timeout as number | undefined;
@@ -285,8 +296,9 @@ export function createBashToolDefinition(
 			onUpdate?,
 			_ctx?,
 		) {
+			const runtimeCwd = resolveRuntimeCwd(cwd);
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
-			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
+			const spawnContext = resolveSpawnContext(resolvedCommand, runtimeCwd.cwd, spawnHook);
 			if (onUpdate) {
 				onUpdate({ content: [], details: undefined });
 			}
@@ -363,6 +375,7 @@ export function createBashToolDefinition(
 								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(BASH_MAX_BYTES)} limit). Full output: ${tempFilePath}]`;
 							}
 						}
+						outputText = prependRecoveryNotice(outputText, runtimeCwd.recoveryNotice);
 						if (exitCode !== 0 && exitCode !== null) {
 							outputText += `\n\nCommand exited with code ${exitCode}`;
 							reject(new Error(outputText));
@@ -378,14 +391,14 @@ export function createBashToolDefinition(
 						if (err.message === "aborted") {
 							if (output) output += "\n\n";
 							output += "Command aborted";
-							reject(new Error(output));
+							reject(new Error(prependRecoveryNotice(output, runtimeCwd.recoveryNotice)));
 						} else if (err.message.startsWith("timeout:")) {
 							const timeoutSecs = err.message.split(":")[1];
 							if (output) output += "\n\n";
 							output += `Command timed out after ${timeoutSecs} seconds`;
-							reject(new Error(output));
+							reject(new Error(prependRecoveryNotice(output, runtimeCwd.recoveryNotice)));
 						} else {
-							reject(err);
+							reject(new Error(prependRecoveryNotice(err.message, runtimeCwd.recoveryNotice)));
 						}
 					});
 			});

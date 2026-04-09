@@ -8,7 +8,7 @@ import { editTool } from "../src/core/tools/edit.js";
 import { findTool } from "../src/core/tools/find.js";
 import { grepTool } from "../src/core/tools/grep.js";
 import { lsTool } from "../src/core/tools/ls.js";
-import { readTool } from "../src/core/tools/read.js";
+import { createReadTool, readTool } from "../src/core/tools/read.js";
 import { writeTool } from "../src/core/tools/write.js";
 import { BASH_MAX_BYTES, BASH_MAX_LINES, truncateTail } from "../src/core/tools/truncate.js";
 import * as shellModule from "../src/utils/shell.js";
@@ -55,6 +55,91 @@ describe("Coding Agent Tools", () => {
 			const testFile = join(testDir, "nonexistent.txt");
 
 			await expect(readTool.execute("test-call-2", { path: testFile })).rejects.toThrow(/ENOENT|not found/i);
+		});
+
+		it("recovers from a deleted configured cwd and includes a recovery notice", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const testFile = join(testDir, "recovered-read.txt");
+			writeFileSync(testFile, "Recovered read content");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+
+			try {
+				const recoveredReadTool = createReadTool(deletedCwd);
+				const result = await recoveredReadTool.execute("test-call-read-recover", { path: "recovered-read.txt" });
+				const output = getTextOutput(result);
+
+				expect(output).toContain("Recovered from missing configured working directory");
+				expect(output).toContain(deletedCwd);
+				expect(output).toContain(testDir);
+				expect(output).toContain("Recovered read content");
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
+		it("fails with an actionable error when read has no valid cwd fallback", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const missingFallback = join(testDir, "missing-live-cwd");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(missingFallback);
+
+			try {
+				const recoveredReadTool = createReadTool(deletedCwd);
+
+				await expect(recoveredReadTool.execute("test-call-read-no-fallback", { path: "missing.txt" })).rejects.toThrow(
+					/Configured working directory is no longer available/,
+				);
+				await expect(recoveredReadTool.execute("test-call-read-no-fallback-2", { path: "missing.txt" })).rejects.toThrow(
+					/Start a new session in an existing directory or restore that directory before retrying/,
+				);
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
+		it("preserves the recovery notice when the recovered read still fails", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+
+			try {
+				const recoveredReadTool = createReadTool(deletedCwd);
+
+				await expect(recoveredReadTool.execute("test-call-read-recover-fail", { path: "missing-after-recovery.txt" })).rejects.toThrow(
+					/Recovered from missing configured working directory/,
+				);
+				await expect(recoveredReadTool.execute("test-call-read-recover-fail-2", { path: "missing-after-recovery.txt" })).rejects.toThrow(
+					/ENOENT|not found/i,
+				);
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
+		it("includes the recovery notice when an aborted recovered read fails", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+
+			try {
+				const recoveredReadTool = createReadTool(deletedCwd);
+				const controller = new AbortController();
+				controller.abort();
+
+				await expect(
+					recoveredReadTool.execute(
+						"test-call-read-recover-abort",
+						{ path: "missing-after-recovery.txt" },
+						controller.signal,
+					),
+				).rejects.toThrow(/Recovered from missing configured working directory/);
+				await expect(
+					recoveredReadTool.execute(
+						"test-call-read-recover-abort-2",
+						{ path: "missing-after-recovery.txt" },
+						controller.signal,
+					),
+				).rejects.toThrow(/Operation aborted/);
+			} finally {
+				cwdSpy.mockRestore();
+			}
 		});
 
 		it("should truncate files exceeding line limit", async () => {
@@ -379,14 +464,41 @@ describe("Coding Agent Tools", () => {
 			);
 		});
 
-		it("should throw error when cwd does not exist", async () => {
+		it("recovers from a deleted configured cwd and includes a recovery notice", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+
+			try {
+				const recoveredBashTool = createBashTool(deletedCwd);
+				const result = await recoveredBashTool.execute("test-call-11", { command: "printf recovered-bash" });
+				const output = getTextOutput(result);
+
+				expect(output).toContain("Recovered from missing configured working directory");
+				expect(output).toContain(deletedCwd);
+				expect(output).toContain(testDir);
+				expect(output).toContain("recovered-bash");
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
+		it("should throw an actionable error when neither configured cwd nor live process cwd exists", async () => {
 			const nonexistentCwd = "/this/directory/definitely/does/not/exist/12345";
+			const missingFallback = "/this/directory/also/does/not/exist/67890";
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(missingFallback);
 
-			const bashToolWithBadCwd = createBashTool(nonexistentCwd);
+			try {
+				const bashToolWithBadCwd = createBashTool(nonexistentCwd);
 
-			await expect(bashToolWithBadCwd.execute("test-call-11", { command: "echo test" })).rejects.toThrow(
-				/Working directory does not exist/,
-			);
+				await expect(bashToolWithBadCwd.execute("test-call-11b", { command: "echo test" })).rejects.toThrow(
+					/Configured working directory is no longer available/,
+				);
+				await expect(bashToolWithBadCwd.execute("test-call-11c", { command: "echo test" })).rejects.toThrow(
+					/Start a new session in an existing directory or restore that directory before retrying/,
+				);
+			} finally {
+				cwdSpy.mockRestore();
+			}
 		});
 
 		it("should handle process spawn errors", async () => {

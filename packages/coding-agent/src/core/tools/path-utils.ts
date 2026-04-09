@@ -32,6 +32,14 @@ function fileExists(filePath: string): boolean {
 	}
 }
 
+function getLiveProcessCwd(): string | undefined {
+	try {
+		return process.cwd();
+	} catch {
+		return undefined;
+	}
+}
+
 function normalizeAtPrefix(filePath: string): string {
 	return filePath.startsWith("@") ? filePath.slice(1) : filePath;
 }
@@ -57,6 +65,29 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 		return expanded;
 	}
 	return resolvePath(cwd, expanded);
+}
+
+export interface RuntimeCwdResolution {
+	cwd: string;
+	recoveryNotice?: string;
+}
+
+export function resolveRuntimeCwd(configuredCwd: string): RuntimeCwdResolution {
+	if (fileExists(configuredCwd)) {
+		return { cwd: configuredCwd };
+	}
+
+	const liveProcessCwd = getLiveProcessCwd();
+	if (liveProcessCwd && liveProcessCwd !== configuredCwd && fileExists(liveProcessCwd)) {
+		return {
+			cwd: liveProcessCwd,
+			recoveryNotice: `Recovered from missing configured working directory: ${configuredCwd}\nUsing live process.cwd(): ${liveProcessCwd}`,
+		};
+	}
+
+	throw new Error(
+		`Configured working directory is no longer available: ${configuredCwd}\nThe original worktree may have been deleted. Start a new session in an existing directory or restore that directory before retrying.`,
+	);
 }
 
 export function resolveReadPath(filePath: string, cwd: string): string {

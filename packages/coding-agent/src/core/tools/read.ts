@@ -9,7 +9,7 @@ import { getLanguageFromPath, highlightCode } from "../../modes/interactive/them
 import { formatDimensionNote, resizeImage } from "../../utils/image-resize.js";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { resolveReadPath } from "./path-utils.js";
+import { resolveReadPath, resolveRuntimeCwd } from "./path-utils.js";
 import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import {
@@ -85,6 +85,16 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 	return lines.slice(0, end);
 }
 
+function prependRecoveryNotice(text: string, recoveryNotice?: string): string {
+	if (!recoveryNotice) {
+		return text;
+	}
+	if (!text) {
+		return recoveryNotice;
+	}
+	return `${recoveryNotice}\n\n${text}`;
+}
+
 function formatReadResult(
 	args: { path?: string; file_path?: string; offset?: number; limit?: number } | undefined,
 	result: { content: (TextContent | ImageContent)[]; details?: ReadToolDetails },
@@ -138,17 +148,18 @@ export function createReadToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
-			const absolutePath = resolveReadPath(path, cwd);
+			const runtimeCwd = resolveRuntimeCwd(cwd);
+			const absolutePath = resolveReadPath(path, runtimeCwd.cwd);
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
 				(resolve, reject) => {
 					if (signal?.aborted) {
-						reject(new Error("Operation aborted"));
+						reject(new Error(prependRecoveryNotice("Operation aborted", runtimeCwd.recoveryNotice)));
 						return;
 					}
 					let aborted = false;
 					const onAbort = () => {
 						aborted = true;
-						reject(new Error("Operation aborted"));
+						reject(new Error(prependRecoveryNotice("Operation aborted", runtimeCwd.recoveryNotice)));
 					};
 					signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -171,7 +182,10 @@ export function createReadToolDefinition(
 										content = [
 											{
 												type: "text",
-												text: `Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`,
+												text: prependRecoveryNotice(
+												`Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`,
+												runtimeCwd.recoveryNotice,
+											),
 											},
 										];
 									} else {
@@ -179,13 +193,13 @@ export function createReadToolDefinition(
 										let textNote = `Read image file [${resized.mimeType}]`;
 										if (dimensionNote) textNote += `\n${dimensionNote}`;
 										content = [
-											{ type: "text", text: textNote },
+											{ type: "text", text: prependRecoveryNotice(textNote, runtimeCwd.recoveryNotice) },
 											{ type: "image", data: resized.data, mimeType: resized.mimeType },
 										];
 									}
 								} else {
 									content = [
-										{ type: "text", text: `Read image file [${mimeType}]` },
+										{ type: "text", text: prependRecoveryNotice(`Read image file [${mimeType}]`, runtimeCwd.recoveryNotice) },
 										{ type: "image", data: base64, mimeType },
 									];
 								}
@@ -243,15 +257,18 @@ export function createReadToolDefinition(
 									// No truncation and no remaining user-limited content.
 									outputText = truncation.content;
 								}
-								content = [{ type: "text", text: outputText }];
+								content = [{ type: "text", text: prependRecoveryNotice(outputText, runtimeCwd.recoveryNotice) }];
 							}
 
 							if (aborted) return;
 							signal?.removeEventListener("abort", onAbort);
 							resolve({ content, details });
-						} catch (error: any) {
+						} catch (error: unknown) {
 							signal?.removeEventListener("abort", onAbort);
-							if (!aborted) reject(error);
+							if (!aborted) {
+								const message = error instanceof Error ? error.message : String(error);
+								reject(new Error(prependRecoveryNotice(message, runtimeCwd.recoveryNotice)));
+							}
 						}
 					})();
 				},

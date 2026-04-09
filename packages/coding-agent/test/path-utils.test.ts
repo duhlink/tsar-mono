@@ -1,8 +1,8 @@
-import { mkdtempSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { expandPath, resolveReadPath, resolveToCwd } from "../src/core/tools/path-utils.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expandPath, resolveReadPath, resolveRuntimeCwd, resolveToCwd } from "../src/core/tools/path-utils.js";
 
 describe("path-utils", () => {
 	describe("expandPath", () => {
@@ -36,6 +36,49 @@ describe("path-utils", () => {
 		});
 	});
 
+	describe("resolveRuntimeCwd", () => {
+		it("returns the configured cwd when it still exists", () => {
+			const result = resolveRuntimeCwd(process.cwd());
+
+			expect(result).toEqual({ cwd: process.cwd() });
+		});
+
+		it("recovers to the live process cwd when the configured cwd was deleted", () => {
+			const fallbackDir = mkdtempSync(join(tmpdir(), "path-utils-fallback-"));
+			const deletedDir = join(fallbackDir, "deleted-worktree");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(fallbackDir);
+
+			try {
+				const result = resolveRuntimeCwd(deletedDir);
+
+				expect(result.cwd).toBe(fallbackDir);
+				expect(result.recoveryNotice).toContain("Recovered from missing configured working directory");
+				expect(result.recoveryNotice).toContain(deletedDir);
+				expect(result.recoveryNotice).toContain(fallbackDir);
+			} finally {
+				cwdSpy.mockRestore();
+				rmSync(fallbackDir, { recursive: true, force: true });
+			}
+		});
+
+		it("throws an actionable error when neither configured cwd nor live process cwd exists", () => {
+			const deletedDir = join(tmpdir(), "path-utils-missing-configured");
+			const missingFallback = join(tmpdir(), "path-utils-missing-fallback");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(missingFallback);
+
+			try {
+				expect(() => resolveRuntimeCwd(deletedDir)).toThrowError(
+					new RegExp(
+						`Configured working directory is no longer available: ${deletedDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+					),
+				);
+				expect(() => resolveRuntimeCwd(deletedDir)).toThrow(/Start a new session in an existing directory/);
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+	});
+
 	describe("resolveReadPath", () => {
 		let tempDir: string;
 
@@ -44,16 +87,7 @@ describe("path-utils", () => {
 		});
 
 		afterEach(() => {
-			// Clean up temp files and directory
-			try {
-				const files = readdirSync(tempDir);
-				for (const file of files) {
-					unlinkSync(join(tempDir, file));
-				}
-				rmdirSync(tempDir);
-			} catch {
-				// Ignore cleanup errors
-			}
+			rmSync(tempDir, { recursive: true, force: true });
 		});
 
 		it("should resolve existing file path", () => {
