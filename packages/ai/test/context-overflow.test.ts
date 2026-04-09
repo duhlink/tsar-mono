@@ -4,9 +4,10 @@
  * Context overflow occurs when the input (prompt + history) exceeds
  * the model's context window. This is different from output token limits.
  *
- * Expected behavior: All providers should return stopReason: "error"
+ * Expected behavior: Providers should either return stopReason: "error"
  * with an errorMessage that indicates the context was too large,
- * OR (for z.ai) return successfully with usage.input > contextWindow.
+ * OR return successfully with combined usage tokens above contextWindow
+ * when the provider reports overflow via usage instead of an explicit error.
  *
  * The isContextOverflow() function must return true for all providers.
  */
@@ -280,18 +281,28 @@ describe("Context overflow error handling", () => {
 
 	// =============================================================================
 	// OpenAI Codex (OAuth)
-	// Uses ChatGPT Plus/Pro subscription via OAuth
+	// Uses ChatGPT Plus/Pro subscription via OAuth.
+	// GPT-5.4 may surface overflow via usage totals instead of an explicit error.
 	// =============================================================================
 
 	describe("OpenAI Codex (OAuth)", () => {
 		it.skipIf(!openaiCodexToken)(
-			"gpt-5.2-codex - should detect overflow via isContextOverflow",
+			"gpt-5.4 - should detect overflow via isContextOverflow",
 			async () => {
-				const model = getModel("openai-codex", "gpt-5.2-codex");
+				const model = getModel("openai-codex", "gpt-5.4");
 				const result = await testContextOverflow(model, openaiCodexToken!);
 				logResult(result);
 
-				expect(result.stopReason).toBe("error");
+				if (result.stopReason === "error") {
+					expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+					return;
+				}
+
+				const totalInputTokens = result.usage.input + result.usage.cacheRead;
+
+				expect(result.stopReason).toBe("stop");
+				expect(result.hasUsageData).toBe(true);
+				expect(totalInputTokens).toBeGreaterThan(model.contextWindow);
 				expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
 			},
 			120000,
