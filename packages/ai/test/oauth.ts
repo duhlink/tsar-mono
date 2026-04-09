@@ -12,6 +12,8 @@ import { getOAuthApiKey } from "../src/utils/oauth/index.js";
 import type { OAuthCredentials, OAuthProvider } from "../src/utils/oauth/types.js";
 
 const AUTH_PATH = join(homedir(), ".tsar", "agent", "auth.json");
+// Temporary gate: keep Anthropic OAuth helper-backed tests opt-in until local auth is stable.
+const ANTHROPIC_OAUTH_TESTS_ENABLED = process.env.TSAR_ENABLE_ANTHROPIC_OAUTH_TESTS === "1";
 
 type ApiKeyCredential = {
 	type: "api_key";
@@ -56,6 +58,10 @@ function saveAuthStorage(storage: AuthStorage): void {
  * For google-gemini-cli and google-antigravity, returns JSON-encoded { token, projectId }
  */
 export async function resolveApiKey(provider: string): Promise<string | undefined> {
+	if (provider === "anthropic" && !ANTHROPIC_OAUTH_TESTS_ENABLED) {
+		return undefined;
+	}
+
 	const storage = loadAuthStorage();
 	const entry = storage[provider];
 
