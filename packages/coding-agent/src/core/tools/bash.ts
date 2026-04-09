@@ -12,16 +12,10 @@ import { theme } from "../../modes/interactive/theme/theme.js";
 import { waitForChildProcess } from "../../utils/child-process.js";
 import { getShellConfig, getShellEnv, killProcessTree } from "../../utils/shell.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { getTextOutput, invalidArgText, str } from "./render-utils.js";
 import { resolveRuntimeCwd } from "./path-utils.js";
+import { getTextOutput, invalidArgText, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
-import {
-	BASH_MAX_BYTES,
-	BASH_MAX_LINES,
-	formatSize,
-	type TruncationResult,
-	truncateTail,
-} from "./truncate.js";
+import { BASH_MAX_BYTES, BASH_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
 
 /**
  * Generate a unique temp file path for bash output.
@@ -296,6 +290,9 @@ export function createBashToolDefinition(
 			onUpdate?,
 			_ctx?,
 		) {
+			if (signal?.aborted) {
+				throw new Error("Command aborted");
+			}
 			const runtimeCwd = resolveRuntimeCwd(cwd);
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, runtimeCwd.cwd, spawnHook);

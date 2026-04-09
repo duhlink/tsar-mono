@@ -148,6 +148,9 @@ export function createReadToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
+			if (signal?.aborted) {
+				throw new Error("Operation aborted");
+			}
 			const runtimeCwd = resolveRuntimeCwd(cwd);
 			const absolutePath = resolveReadPath(path, runtimeCwd.cwd);
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
@@ -183,9 +186,9 @@ export function createReadToolDefinition(
 											{
 												type: "text",
 												text: prependRecoveryNotice(
-												`Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`,
-												runtimeCwd.recoveryNotice,
-											),
+													`Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`,
+													runtimeCwd.recoveryNotice,
+												),
 											},
 										];
 									} else {
@@ -199,7 +202,13 @@ export function createReadToolDefinition(
 									}
 								} else {
 									content = [
-										{ type: "text", text: prependRecoveryNotice(`Read image file [${mimeType}]`, runtimeCwd.recoveryNotice) },
+										{
+											type: "text",
+											text: prependRecoveryNotice(
+												`Read image file [${mimeType}]`,
+												runtimeCwd.recoveryNotice,
+											),
+										},
 										{ type: "image", data: base64, mimeType },
 									];
 								}
@@ -257,7 +266,9 @@ export function createReadToolDefinition(
 									// No truncation and no remaining user-limited content.
 									outputText = truncation.content;
 								}
-								content = [{ type: "text", text: prependRecoveryNotice(outputText, runtimeCwd.recoveryNotice) }];
+								content = [
+									{ type: "text", text: prependRecoveryNotice(outputText, runtimeCwd.recoveryNotice) },
+								];
 							}
 
 							if (aborted) return;

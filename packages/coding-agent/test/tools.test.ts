@@ -9,8 +9,8 @@ import { findTool } from "../src/core/tools/find.js";
 import { grepTool } from "../src/core/tools/grep.js";
 import { lsTool } from "../src/core/tools/ls.js";
 import { createReadTool, readTool } from "../src/core/tools/read.js";
-import { writeTool } from "../src/core/tools/write.js";
 import { BASH_MAX_BYTES, BASH_MAX_LINES, truncateTail } from "../src/core/tools/truncate.js";
+import { writeTool } from "../src/core/tools/write.js";
 import * as shellModule from "../src/utils/shell.js";
 
 // Helper to extract text from content blocks
@@ -85,12 +85,12 @@ describe("Coding Agent Tools", () => {
 			try {
 				const recoveredReadTool = createReadTool(deletedCwd);
 
-				await expect(recoveredReadTool.execute("test-call-read-no-fallback", { path: "missing.txt" })).rejects.toThrow(
-					/Configured working directory is no longer available/,
-				);
-				await expect(recoveredReadTool.execute("test-call-read-no-fallback-2", { path: "missing.txt" })).rejects.toThrow(
-					/Start a new session in an existing directory or restore that directory before retrying/,
-				);
+				await expect(
+					recoveredReadTool.execute("test-call-read-no-fallback", { path: "missing.txt" }),
+				).rejects.toThrow(/Configured working directory is no longer available/);
+				await expect(
+					recoveredReadTool.execute("test-call-read-no-fallback-2", { path: "missing.txt" }),
+				).rejects.toThrow(/Start a new session in an existing directory or restore that directory before retrying/);
 			} finally {
 				cwdSpy.mockRestore();
 			}
@@ -103,20 +103,21 @@ describe("Coding Agent Tools", () => {
 			try {
 				const recoveredReadTool = createReadTool(deletedCwd);
 
-				await expect(recoveredReadTool.execute("test-call-read-recover-fail", { path: "missing-after-recovery.txt" })).rejects.toThrow(
-					/Recovered from missing configured working directory/,
-				);
-				await expect(recoveredReadTool.execute("test-call-read-recover-fail-2", { path: "missing-after-recovery.txt" })).rejects.toThrow(
-					/ENOENT|not found/i,
-				);
+				await expect(
+					recoveredReadTool.execute("test-call-read-recover-fail", { path: "missing-after-recovery.txt" }),
+				).rejects.toThrow(/Recovered from missing configured working directory/);
+				await expect(
+					recoveredReadTool.execute("test-call-read-recover-fail-2", { path: "missing-after-recovery.txt" }),
+				).rejects.toThrow(/ENOENT|not found/i);
 			} finally {
 				cwdSpy.mockRestore();
 			}
 		});
 
-		it("includes the recovery notice when an aborted recovered read fails", async () => {
+		it("pre-aborted recovered reads short-circuit before cwd recovery resolution", async () => {
 			const deletedCwd = join(testDir, "deleted-worktree");
-			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+			const missingFallback = join(testDir, "missing-live-cwd");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(missingFallback);
 
 			try {
 				const recoveredReadTool = createReadTool(deletedCwd);
@@ -129,14 +130,16 @@ describe("Coding Agent Tools", () => {
 						{ path: "missing-after-recovery.txt" },
 						controller.signal,
 					),
-				).rejects.toThrow(/Recovered from missing configured working directory/);
+				).rejects.toThrow(/^Operation aborted$/);
 				await expect(
 					recoveredReadTool.execute(
 						"test-call-read-recover-abort-2",
 						{ path: "missing-after-recovery.txt" },
 						controller.signal,
 					),
-				).rejects.toThrow(/Operation aborted/);
+				).rejects.not.toThrow(
+					/Configured working directory is no longer available|Recovered from missing configured working directory|ENOENT|not found/i,
+				);
 			} finally {
 				cwdSpy.mockRestore();
 			}
@@ -501,6 +504,87 @@ describe("Coding Agent Tools", () => {
 			}
 		});
 
+		it("pre-aborted recovered bash calls short-circuit before cwd recovery resolution", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const missingFallback = join(testDir, "missing-live-cwd");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(missingFallback);
+
+			try {
+				const recoveredBashTool = createBashTool(deletedCwd);
+				const controller = new AbortController();
+				controller.abort();
+
+				await expect(
+					recoveredBashTool.execute("test-call-11d", { command: "echo test" }, controller.signal),
+				).rejects.toThrow(/^Command aborted$/);
+				await expect(
+					recoveredBashTool.execute("test-call-11e", { command: "echo test" }, controller.signal),
+				).rejects.not.toThrow(
+					/Configured working directory is no longer available|Recovered from missing configured working directory/i,
+				);
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
+		it("preserves the recovery notice when a recovered bash command times out", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+
+			try {
+				const recoveredBashTool = createBashTool(deletedCwd);
+
+				await expect(
+					recoveredBashTool.execute("test-call-11f", { command: "sleep 5", timeout: 1 }),
+				).rejects.toThrow(/Recovered from missing configured working directory/);
+				await expect(
+					recoveredBashTool.execute("test-call-11g", { command: "sleep 5", timeout: 1 }),
+				).rejects.toThrow(/Command timed out after 1 seconds/);
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
+		it("preserves the recovery notice when a recovered bash command hits a spawn error", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+
+			try {
+				vi.spyOn(shellModule, "getShellConfig").mockReturnValueOnce({
+					shell: "/nonexistent-shell-path-xyz123",
+					args: ["-c"],
+				});
+
+				const recoveredBashTool = createBashTool(deletedCwd);
+				const execution = recoveredBashTool.execute("test-call-11h", { command: "echo test" });
+
+				await expect(execution).rejects.toThrow(/Recovered from missing configured working directory/);
+				await expect(execution).rejects.toThrow(/ENOENT/);
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
+		it("preserves the recovery notice when a recovered bash command aborts after start", async () => {
+			const deletedCwd = join(testDir, "deleted-worktree");
+			const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(testDir);
+
+			try {
+				const recoveredBashTool = createBashTool(deletedCwd);
+				const controller = new AbortController();
+				setTimeout(() => controller.abort(), 100);
+
+				await expect(
+					recoveredBashTool.execute("test-call-11j", { command: "sleep 5" }, controller.signal),
+				).rejects.toThrow(/Recovered from missing configured working directory/);
+				await expect(
+					recoveredBashTool.execute("test-call-11k", { command: "sleep 5" }, controller.signal),
+				).rejects.toThrow(/Command aborted/);
+			} finally {
+				cwdSpy.mockRestore();
+			}
+		});
+
 		it("should handle process spawn errors", async () => {
 			vi.spyOn(shellModule, "getShellConfig").mockReturnValueOnce({
 				shell: "/nonexistent-shell-path-xyz123",
@@ -558,8 +642,10 @@ describe("Coding Agent Tools", () => {
 		});
 
 		it("should treat newline-terminated 500 and 501 line outputs honestly at the truncateTail boundary", () => {
-			const exactly500 = Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
-			const exactly501 = Array.from({ length: 501 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
+			const exactly500 =
+				Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
+			const exactly501 =
+				Array.from({ length: 501 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
 
 			const noTruncation = truncateTail(exactly500, { maxLines: BASH_MAX_LINES, maxBytes: Number.MAX_SAFE_INTEGER });
 			expect(noTruncation.truncated).toBe(false);
