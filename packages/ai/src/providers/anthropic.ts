@@ -196,6 +196,40 @@ function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]):
 	return merged;
 }
 
+function getErrorMessage(error: unknown): string | undefined {
+	return error instanceof Error ? error.message : JSON.stringify(error);
+}
+
+function isAnthropicToolCallJsonParseError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+
+	return (
+		/(?:unexpected end of json input|unexpected token .* in json|unterminated .* in json|bad control character .* in json|json at position \d+)/i.test(
+			error.message,
+		) ||
+		(error instanceof SyntaxError && /json/i.test(error.message))
+	);
+}
+
+function hasIncompleteAnthropicToolCall(content: AssistantMessage["content"]): boolean {
+	return content.some((block) => block.type === "toolCall" && "partialJson" in block);
+}
+
+function normalizeAnthropicStreamError(error: unknown, content: AssistantMessage["content"]): string | undefined {
+	const rawMessage = getErrorMessage(error);
+	if (!rawMessage || !hasIncompleteAnthropicToolCall(content) || !isAnthropicToolCallJsonParseError(error)) {
+		return rawMessage;
+	}
+
+	return [
+		"Anthropic streamed malformed tool-call JSON before tool execution, so the tool was not run.",
+		`Raw parser error: ${rawMessage}`,
+		"Retry with a smaller payload or split the request into smaller tool calls.",
+	].join(" ");
+}
+
 export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -429,9 +463,10 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			const normalizedErrorMessage = normalizeAnthropicStreamError(error, output.content);
 			for (const block of output.content) delete (block as any).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			output.errorMessage = normalizedErrorMessage;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

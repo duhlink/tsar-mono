@@ -6,6 +6,8 @@
 
 - Fixed uncaught JSON.parse error when thinkingSignature is corrupted in OpenAI Responses provider.
 
+- Normalized Anthropic streamed tool-call JSON parse failures into actionable provider errors that preserve the raw parser message, clarify that tool execution never began, and suggest retrying with smaller or split payloads.
+
 ## [0.63.1] - 2026-03-27
 
 ### Added
