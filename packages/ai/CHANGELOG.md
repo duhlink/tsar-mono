@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed uncaught JSON.parse error when thinkingSignature is corrupted in OpenAI Responses provider.
+
 ## [0.63.1] - 2026-03-27
 
 ### Added
