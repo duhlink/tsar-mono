@@ -606,4 +606,74 @@ describe("TUI overlay non-capturing", () => {
 			}
 		});
 	});
+
+	describe("input routing", () => {
+		it("capturing overlay receives input", async () => {
+			const terminal = new VirtualTerminal(80, 24);
+			const tui = new TUI(terminal);
+			const editor = new FocusableOverlay(["EDITOR"]);
+			const overlay = new FocusableOverlay(["OVERLAY"]);
+			tui.addChild(new EmptyContent());
+			tui.setFocus(editor);
+			tui.start();
+			try {
+				tui.showOverlay(overlay);
+				await renderAndFlush(tui, terminal);
+				assert.strictEqual(overlay.focused, true);
+				terminal.sendInput("x");
+				await renderAndFlush(tui, terminal);
+				assert.deepStrictEqual(overlay.inputs, ["x"]);
+				assert.deepStrictEqual(editor.inputs, []);
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("nonCapturing overlay does not receive input — focusedComponent stays on editor", async () => {
+			const terminal = new VirtualTerminal(80, 24);
+			const tui = new TUI(terminal);
+			const editor = new FocusableOverlay(["EDITOR"]);
+			const overlay = new FocusableOverlay(["OVERLAY"]);
+			tui.addChild(new EmptyContent());
+			tui.setFocus(editor);
+			tui.start();
+			try {
+				tui.showOverlay(overlay, { nonCapturing: true });
+				await renderAndFlush(tui, terminal);
+				assert.strictEqual(editor.focused, true);
+				terminal.sendInput("x");
+				await renderAndFlush(tui, terminal);
+				assert.deepStrictEqual(editor.inputs, ["x"]);
+				assert.deepStrictEqual(overlay.inputs, []);
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("after capturing overlay closes, input returns to editor", async () => {
+			const terminal = new VirtualTerminal(80, 24);
+			const tui = new TUI(terminal);
+			const editor = new FocusableOverlay(["EDITOR"]);
+			const overlay = new FocusableOverlay(["OVERLAY"]);
+			tui.addChild(new EmptyContent());
+			tui.setFocus(editor);
+			tui.start();
+			try {
+				const handle = tui.showOverlay(overlay);
+				await renderAndFlush(tui, terminal);
+				terminal.sendInput("a");
+				await renderAndFlush(tui, terminal);
+				assert.deepStrictEqual(overlay.inputs, ["a"]);
+				handle.hide();
+				await renderAndFlush(tui, terminal);
+				assert.strictEqual(editor.focused, true);
+				terminal.sendInput("b");
+				await renderAndFlush(tui, terminal);
+				assert.deepStrictEqual(editor.inputs, ["b"]);
+				assert.deepStrictEqual(overlay.inputs, ["a"]);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
 });
