@@ -197,6 +197,7 @@ export interface AssistantMessage {
 	usage: Usage;
 	stopReason: StopReason;
 	errorMessage?: string;
+	isAuthError?: boolean; // True when error is an authentication/authorization failure
 	timestamp: number; // Unix timestamp in milliseconds
 }
 

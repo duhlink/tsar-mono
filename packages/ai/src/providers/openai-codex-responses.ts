@@ -26,6 +26,7 @@ import type {
 	StreamFunction,
 	StreamOptions,
 } from "../types.js";
+import { classifyAuthError } from "../utils/auth-errors.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions, clampReasoning } from "./simple-options.js";
@@ -261,7 +262,13 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			stream.end();
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : String(error);
+			const authClassification = classifyAuthError(error, model.provider);
+			if (authClassification) {
+				output.errorMessage = authClassification.userMessage;
+				output.isAuthError = true;
+			} else {
+				output.errorMessage = error instanceof Error ? error.message : String(error);
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

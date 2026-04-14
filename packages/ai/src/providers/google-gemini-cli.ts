@@ -20,6 +20,7 @@ import type {
 	ThinkingLevel,
 	ToolCall,
 } from "../types.js";
+import { classifyAuthError } from "../utils/auth-errors.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import {
@@ -796,7 +797,13 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 				}
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			const authClassification = classifyAuthError(error, model.provider);
+			if (authClassification) {
+				output.errorMessage = authClassification.userMessage;
+				output.isAuthError = true;
+			} else {
+				output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

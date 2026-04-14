@@ -26,6 +26,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.js";
+import { classifyAuthError } from "../utils/auth-errors.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
@@ -291,10 +292,16 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 		} catch (error) {
 			for (const block of output.content) delete (block as any).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
-			// Some providers via OpenRouter give additional information in this field.
-			const rawMetadata = (error as any)?.error?.metadata?.raw;
-			if (rawMetadata) output.errorMessage += `\n${rawMetadata}`;
+			const authClassification = classifyAuthError(error, model.provider);
+			if (authClassification) {
+				output.errorMessage = authClassification.userMessage;
+				output.isAuthError = true;
+			} else {
+				output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+				// Some providers via OpenRouter give additional information in this field.
+				const rawMetadata = (error as any)?.error?.metadata?.raw;
+				if (rawMetadata) output.errorMessage += `\n${rawMetadata}`;
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

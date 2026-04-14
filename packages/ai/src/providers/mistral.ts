@@ -23,6 +23,7 @@ import type {
 	Tool,
 	ToolCall,
 } from "../types.js";
+import { classifyAuthError } from "../utils/auth-errors.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
@@ -90,7 +91,13 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
 			stream.end();
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = formatMistralError(error);
+			const authClassification = classifyAuthError(error, model.provider);
+			if (authClassification) {
+				output.errorMessage = authClassification.userMessage;
+				output.isAuthError = true;
+			} else {
+				output.errorMessage = formatMistralError(error);
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

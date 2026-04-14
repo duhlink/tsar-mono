@@ -13,6 +13,7 @@ import type {
 	StreamOptions,
 	Usage,
 } from "../types.js";
+import { classifyAuthError } from "../utils/auth-errors.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
@@ -118,7 +119,13 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 		} catch (error) {
 			for (const block of output.content) delete (block as { index?: number }).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			const authClassification = classifyAuthError(error, model.provider);
+			if (authClassification) {
+				output.errorMessage = authClassification.userMessage;
+				output.isAuthError = true;
+			} else {
+				output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
