@@ -29,6 +29,7 @@ import {
 	collectEntriesForBranchSummary,
 	compact,
 	estimateContextTokens,
+	estimateSystemOverhead,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -1753,6 +1754,10 @@ export class AgentSession {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return;
 
+		const fixedOverhead = this.model
+			? estimateSystemOverhead(this.agent.state.systemPrompt, this.agent.state.tools)
+			: 0;
+
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
 
@@ -1797,7 +1802,7 @@ export class AgentSession {
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.replaceMessages(messages.slice(0, -1));
 			}
-			await this._runAutoCompaction("overflow", true);
+			await this._runAutoCompaction("overflow", true, fixedOverhead);
 			return;
 		}
 
@@ -1824,15 +1829,19 @@ export class AgentSession {
 		} else {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
-		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			await this._runAutoCompaction("threshold", false);
+		if (shouldCompact(contextTokens, contextWindow, settings, fixedOverhead)) {
+			await this._runAutoCompaction("threshold", false, fixedOverhead);
 		}
 	}
 
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+		fixedOverhead = 0,
+	): Promise<void> {
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "compaction_start", reason });
@@ -1879,9 +1888,14 @@ export class AgentSession {
 
 			const pathEntries = this.sessionManager.getBranch();
 
-			const preparation = prepareCompaction(pathEntries, settings, {
-				allowAssistantCutPoints: !willRetry,
-			});
+			const preparation = prepareCompaction(
+				pathEntries,
+				settings,
+				{
+					allowAssistantCutPoints: !willRetry,
+				},
+				fixedOverhead,
+			);
 			if (!preparation) {
 				this._emit({
 					type: "compaction_end",
@@ -1969,6 +1983,25 @@ export class AgentSession {
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.replaceMessages(sessionContext.messages);
+
+			// Post-compaction size verification for overflow retries
+			// If compacted context still exceeds window, the retry will also overflow.
+			// Signal this clearly rather than wasting an API call.
+			if (willRetry && this.model) {
+				const postCompactionEstimate = estimateContextTokens(this.agent.state.messages);
+				const postCompactionTotal = postCompactionEstimate.tokens + fixedOverhead;
+				if (postCompactionTotal > this.model.contextWindow - settings.reserveTokens) {
+					this._emit({
+						type: "compaction_end",
+						reason,
+						result: undefined,
+						aborted: false,
+						willRetry: false,
+						errorMessage: `Context overflow recovery failed: post-compaction context (${postCompactionTotal} estimated tokens) still exceeds model window (${this.model.contextWindow} tokens). Fixed overhead: ${fixedOverhead} tokens. Try reducing context or switching to a larger-context model.`,
+					});
+					return;
+				}
+			}
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as

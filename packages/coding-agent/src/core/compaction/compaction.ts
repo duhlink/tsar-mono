@@ -214,11 +214,69 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 }
 
 /**
- * Check if compaction should trigger based on context usage.
+ * Estimate the fixed overhead from system prompt + tool schemas.
+ * Uses chars/4 heuristic consistent with estimateTokens().
+ *
+ * @param systemPrompt - The system prompt string
+ * @param tools - Array of tools with name, description, and parameters schema
+ * @returns Estimated token count for the fixed overhead
  */
-export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
+export function estimateSystemOverhead(
+	systemPrompt: string,
+	tools?: ReadonlyArray<{ name: string; description: string; parameters?: unknown }>,
+): number {
+	let chars = systemPrompt.length;
+	if (tools) {
+		for (const tool of tools) {
+			chars += tool.name.length + tool.description.length;
+			if (tool.parameters) {
+				chars += JSON.stringify(tool.parameters).length;
+			}
+		}
+	}
+	return Math.ceil(chars / 4);
+}
+
+/**
+ * Calculate the effective keepRecentTokens, accounting for system overhead.
+ * Caps keepRecentTokens to ensure compaction can always reduce enough to fit.
+ *
+ * @param contextWindow - Model context window size
+ * @param fixedOverhead - System prompt + tool schema tokens
+ * @param settings - Compaction settings
+ * @returns Effective keepRecentTokens that guarantees room for overhead + reserve
+ */
+export function effectiveKeepRecentTokens(
+	contextWindow: number,
+	fixedOverhead: number,
+	settings: CompactionSettings,
+): number {
+	// The available space for messages after overhead and reserve
+	const availableForMessages = contextWindow - fixedOverhead - settings.reserveTokens;
+	// keepRecentTokens must leave room for the summary itself (estimate ~2000 tokens)
+	const summaryEstimate = 2000;
+	const maxKeepRecent = availableForMessages - summaryEstimate;
+	if (maxKeepRecent <= 0) return 0;
+	return Math.min(settings.keepRecentTokens, maxKeepRecent);
+}
+
+/**
+ * Check if compaction should trigger based on context usage.
+ * Now accounts for fixed overhead (system prompt + tool schemas).
+ *
+ * @param contextTokens - Estimated context tokens from messages
+ * @param contextWindow - Model context window size
+ * @param settings - Compaction settings
+ * @param fixedOverhead - Estimated tokens from system prompt + tool schemas (default: 0)
+ */
+export function shouldCompact(
+	contextTokens: number,
+	contextWindow: number,
+	settings: CompactionSettings,
+	fixedOverhead = 0,
+): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextTokens > contextWindow - settings.reserveTokens - fixedOverhead;
 }
 
 // ============================================================================
@@ -630,6 +688,7 @@ export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
 	options: PrepareCompactionOptions = {},
+	fixedOverhead = 0,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -655,7 +714,10 @@ export function prepareCompaction(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens, options);
+	const keepRecent = fixedOverhead
+		? effectiveKeepRecentTokens(tokensBefore, fixedOverhead, settings)
+		: settings.keepRecentTokens;
+	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, keepRecent, options);
 
 	// Get UUID of first kept entry
 	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];

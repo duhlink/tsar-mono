@@ -2,11 +2,11 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@tsar/agent-core";
-import * as compactionModule from "../src/core/compaction/index.js";
 import { type AssistantMessage, getModel, type ToolResultMessage } from "@tsar/ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import * as compactionModule from "../src/core/compaction/index.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -47,11 +47,18 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	prepareCompaction: () => ({ dummy: true }),
+	estimateSystemOverhead: () => 0,
+	effectiveKeepRecentTokens: (
+		_contextWindow: number,
+		_fixedOverhead: number,
+		settings: { keepRecentTokens: number },
+	) => settings.keepRecentTokens,
 	shouldCompact: (
 		contextTokens: number,
 		contextWindow: number,
 		settings: { enabled: boolean; reserveTokens: number },
-	) => settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
+		fixedOverhead = 0,
+	) => settings.enabled && contextTokens > contextWindow - settings.reserveTokens - fixedOverhead,
 }));
 
 describe("AgentSession auto-compaction queue resume", () => {
@@ -185,7 +192,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 			overflowAssistant,
 		]);
 
-		const prepareCompactionSpy = vi.spyOn(compactionModule, "prepareCompaction").mockReturnValue({ dummy: true } as any);
+		const prepareCompactionSpy = vi
+			.spyOn(compactionModule, "prepareCompaction")
+			.mockReturnValue({ dummy: true } as any);
 		vi.spyOn(compactionModule, "compact").mockResolvedValue({
 			summary: "compacted",
 			firstKeptEntryId: retryUserId,
@@ -203,9 +212,14 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await runAutoCompaction("overflow", true);
 		await vi.advanceTimersByTimeAsync(100);
 
-		expect(prepareCompactionSpy).toHaveBeenCalledWith(expect.any(Array), expect.any(Object), {
-			allowAssistantCutPoints: false,
-		});
+		expect(prepareCompactionSpy).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.any(Object),
+			{
+				allowAssistantCutPoints: false,
+			},
+			expect.any(Number),
+		);
 
 		const rebuiltContext = sessionManager.buildSessionContext();
 		expect(rebuiltContext.messages[rebuiltContext.messages.length - 1]?.role).toBe("user");
@@ -461,7 +475,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		await checkCompaction(errorAssistant);
 
-		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false, expect.any(Number));
 	});
 
 	it("should not trigger threshold compaction for error messages when no prior usage exists", async () => {
