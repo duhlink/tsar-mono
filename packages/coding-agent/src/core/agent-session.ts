@@ -1680,6 +1680,9 @@ export class AgentSession {
 				| CompactionEntry
 				| undefined;
 
+			// Extension hook: session_compact — handlers can return { autoContinue: true }
+			// to request agent continuation after threshold compaction (d_20260417_030)
+			// Manual compact doesn't need autoContinue — user will send next message
 			if (this._extensionRunner && savedCompactionEntry) {
 				await this._extensionRunner.emit({
 					type: "session_compact",
@@ -1892,6 +1895,7 @@ export class AgentSession {
 
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
+			let extensionAutoContinue = false;
 
 			if (this._extensionRunner?.hasHandlers("session_before_compact")) {
 				const extensionResult = (await this._extensionRunner.emit({
@@ -1972,11 +1976,12 @@ export class AgentSession {
 				| undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
+				const compactResult = (await this._extensionRunner.emit({
 					type: "session_compact",
 					compactionEntry: savedCompactionEntry,
 					fromExtension,
-				});
+				})) as { autoContinue?: boolean } | undefined;
+				extensionAutoContinue = compactResult?.autoContinue === true;
 			}
 
 			if (willRetry && !this._normalizePostCompactionRetryMessages()) {
@@ -2006,9 +2011,10 @@ export class AgentSession {
 						console.error("[AgentSession] Post-compaction retry failed:", err?.message || err);
 					});
 				}, 100);
-			} else if (this.agent.hasQueuedMessages()) {
+			} else if (this.agent.hasQueuedMessages() || extensionAutoContinue) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
+				// Also continue if extension requested auto-continue (d_20260417_030).
 				setTimeout(() => {
 					this.agent.continue().catch((err) => {
 						console.error("[AgentSession] Post-compaction continue failed:", err?.message || err);
@@ -2457,6 +2463,9 @@ export class AgentSession {
 	 */
 	private _isRetryableError(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error" || !message.errorMessage) return false;
+
+		// Auth errors should never be retried — the user must re-authenticate
+		if (message.isAuthError) return false;
 
 		// Context overflow is handled by compaction, not retry
 		const contextWindow = this.model?.contextWindow ?? 0;
