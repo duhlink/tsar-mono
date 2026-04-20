@@ -2039,7 +2039,8 @@ export class AgentSession {
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
-				setTimeout(() => {
+				setTimeout(async () => {
+					await this._fireBeforeAgentStartForContinue();
 					this.agent.continue().catch((err) => {
 						console.error("[AgentSession] Post-compaction retry failed:", err?.message || err);
 					});
@@ -2048,7 +2049,8 @@ export class AgentSession {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
 				// Also continue if extension requested auto-continue (d_20260417_030).
-				setTimeout(() => {
+				setTimeout(async () => {
+					await this._fireBeforeAgentStartForContinue();
 					this.agent.continue().catch((err) => {
 						console.error("[AgentSession] Post-compaction continue failed:", err?.message || err);
 					});
@@ -2512,6 +2514,41 @@ export class AgentSession {
 	}
 
 	/**
+	 * Fire before_agent_start extension event before continue().
+	 * Ensures extensions can inject custom messages and modify the system prompt
+	 * even when the agent is continued programmatically (post-compaction auto-continue).
+	 */
+	private async _fireBeforeAgentStartForContinue(): Promise<void> {
+		if (!this._extensionRunner) return;
+		try {
+			const result = await this._extensionRunner.emitBeforeAgentStart(
+				"",
+				undefined,
+				this._baseSystemPrompt,
+			);
+			if (result?.messages) {
+				for (const msg of result.messages) {
+					this.agent.appendMessage({
+						role: "custom",
+						customType: msg.customType,
+						content: msg.content,
+						display: msg.display,
+						details: msg.details,
+						timestamp: Date.now(),
+					});
+				}
+			}
+			if (result?.systemPrompt) {
+				this.agent.setSystemPrompt(result.systemPrompt);
+			} else {
+				this.agent.setSystemPrompt(this._baseSystemPrompt);
+			}
+		} catch (err) {
+			console.error("[AgentSession] before_agent_start for continue() failed:", (err as Error)?.message || err);
+		}
+	}
+
+	/**
 	 * Handle retryable errors with exponential backoff.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
 	 */
@@ -2582,7 +2619,8 @@ export class AgentSession {
 		this._retryAbortController = undefined;
 
 		// Retry via continue() - use setTimeout to break out of event handler chain
-		setTimeout(() => {
+		setTimeout(async () => {
+			await this._fireBeforeAgentStartForContinue();
 			this.agent.continue().catch(() => {
 				// Retry failed - will be caught by next agent_end
 			});
