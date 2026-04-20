@@ -474,10 +474,16 @@ export function findCutPoint(
 
 	for (let i = endIndex - 1; i >= startIndex; i--) {
 		const entry = entries[i];
-		if (entry.type !== "message") continue;
+
+		// Use getMessageFromEntry to count ALL entries that produce LLM context
+		// (message, custom_message, branch_summary) — not just type "message".
+		// Previously only type "message" was counted, causing compaction to keep
+		// everything when custom_message entries contributed the bulk of tokens.
+		const msg = getMessageFromEntry(entry);
+		if (!msg) continue;
 
 		// Estimate this message's size
-		const messageTokens = estimateTokens(entry.message);
+		const messageTokens = estimateTokens(msg);
 		accumulatedTokens += messageTokens;
 
 		// Check if we've exceeded the budget
@@ -512,6 +518,16 @@ export function findCutPoint(
 	const cutEntry = entries[cutIndex];
 	const isTurnStart = isTurnStartEntry(cutEntry);
 	const turnStartIndex = isTurnStart ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
+
+	if (accumulatedTokens < keepRecentTokens) {
+		console.error(
+			`[compaction-debug] findCutPoint: total=${accumulatedTokens} < keepRecent=${keepRecentTokens}, ` +
+			`range=[${startIndex},${endIndex}) entries=${endIndex - startIndex} cutPoints=${cutPoints.length} ` +
+			`cutIndex=${cutIndex} (defaulted to cutPoints[0]=${cutPoints[0]}). ` +
+			`Context has non-message entries (custom_message, branch_summary) contributing tokens ` +
+			`that were not counted — compaction will not reduce payload.`,
+		);
+	}
 
 	return {
 		firstKeptEntryIndex: cutIndex,
