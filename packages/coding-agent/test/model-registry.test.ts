@@ -1086,7 +1086,6 @@ describe("ModelRegistry", () => {
 				expect(count).toBe(0);
 			});
 
-
 			test("getAvailable includes headers-only providers when requests are satisfiable via headers", async () => {
 				writeRawModelsJson({
 					anthropic: {
@@ -1130,7 +1129,9 @@ describe("ModelRegistry", () => {
 				const auth = await registry.getApiKeyAndHeaders(model!);
 				expect(auth).toEqual({
 					ok: false,
-					error: expect.stringContaining('Failed to resolve provider "anthropic" header "X-Provider-Token" from shell command'),
+					error: expect.stringContaining(
+						'Failed to resolve provider "anthropic" header "X-Provider-Token" from shell command',
+					),
 				});
 			});
 

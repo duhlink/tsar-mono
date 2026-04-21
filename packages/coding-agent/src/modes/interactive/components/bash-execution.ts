@@ -4,12 +4,7 @@
 
 import { Container, Loader, Spacer, Text, type TUI } from "@tsar/tui";
 import stripAnsi from "strip-ansi";
-import {
-	BASH_MAX_BYTES,
-	BASH_MAX_LINES,
-	type TruncationResult,
-	truncateTail,
-} from "../../../core/tools/truncate.js";
+import { BASH_MAX_BYTES, BASH_MAX_LINES, type TruncationResult, truncateTail } from "../../../core/tools/truncate.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, keyText } from "./keybinding-hints.js";

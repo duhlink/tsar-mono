@@ -81,9 +81,7 @@ function getAliases(): Record<string, string> {
 		}
 		return resolveImportPath(specifier);
 	};
-	const codingAgentIndex = fs.existsSync(packageIndex)
-		? packageIndex
-		: path.resolve(__dirname, "../..", "index.ts");
+	const codingAgentIndex = fs.existsSync(packageIndex) ? packageIndex : path.resolve(__dirname, "../..", "index.ts");
 
 	_aliases = {
 		"@tsar/coding-agent": codingAgentIndex,

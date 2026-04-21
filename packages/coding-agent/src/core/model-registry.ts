@@ -541,7 +541,10 @@ export class ModelRegistry {
 		const configuredHeaders = [model.headers, providerHeaders, modelHeaders].filter(
 			(headers): headers is Record<string, string> => Boolean(headers && Object.keys(headers).length > 0),
 		);
-		return configuredHeaders.length > 0 && configuredHeaders.every((headers) => this.hasFastPathResolvableHeaders(headers));
+		return (
+			configuredHeaders.length > 0 &&
+			configuredHeaders.every((headers) => this.hasFastPathResolvableHeaders(headers))
+		);
 	}
 
 	/**

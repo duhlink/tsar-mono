@@ -396,7 +396,13 @@ export function resolveCliModel(options: {
 			(m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
 		);
 		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined, resolutionKind: "registry" };
+			return {
+				model: exact,
+				warning: undefined,
+				thinkingLevel: undefined,
+				error: undefined,
+				resolutionKind: "registry",
+			};
 		}
 	}
 
@@ -427,7 +433,13 @@ export function resolveCliModel(options: {
 			(m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
 		);
 		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined, resolutionKind: "registry" };
+			return {
+				model: exact,
+				warning: undefined,
+				thinkingLevel: undefined,
+				error: undefined,
+				resolutionKind: "registry",
+			};
 		}
 		// Also try parseModelPattern on the full input against all models
 		const fallback = parseModelPattern(cliModel, availableModels, {
