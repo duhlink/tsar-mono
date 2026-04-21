@@ -522,10 +522,10 @@ export function findCutPoint(
 	if (accumulatedTokens < keepRecentTokens) {
 		console.error(
 			`[compaction-debug] findCutPoint: total=${accumulatedTokens} < keepRecent=${keepRecentTokens}, ` +
-			`range=[${startIndex},${endIndex}) entries=${endIndex - startIndex} cutPoints=${cutPoints.length} ` +
-			`cutIndex=${cutIndex} (defaulted to cutPoints[0]=${cutPoints[0]}). ` +
-			`Context has non-message entries (custom_message, branch_summary) contributing tokens ` +
-			`that were not counted — compaction will not reduce payload.`,
+				`range=[${startIndex},${endIndex}) entries=${endIndex - startIndex} cutPoints=${cutPoints.length} ` +
+				`cutIndex=${cutIndex} (defaulted to cutPoints[0]=${cutPoints[0]}). ` +
+				`Context has non-message entries (custom_message, branch_summary) contributing tokens ` +
+				`that were not counted — compaction will not reduce payload.`,
 		);
 	}
 

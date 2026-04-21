@@ -2522,11 +2522,7 @@ export class AgentSession {
 	private async _fireBeforeAgentStartForContinue(): Promise<void> {
 		if (!this._extensionRunner) return;
 		try {
-			const result = await this._extensionRunner.emitBeforeAgentStart(
-				"",
-				undefined,
-				this._baseSystemPrompt,
-			);
+			const result = await this._extensionRunner.emitBeforeAgentStart("", undefined, this._baseSystemPrompt);
 			if (result?.messages) {
 				for (const msg of result.messages) {
 					this.agent.appendMessage({

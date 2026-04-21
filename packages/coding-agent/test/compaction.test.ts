@@ -9,11 +9,11 @@ import {
 	calculateContextTokens,
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
+	effectiveKeepRecentTokens,
 	estimateContextTokens,
 	findCutPoint,
 	getLastAssistantUsage,
 	prepareCompaction,
-	effectiveKeepRecentTokens,
 	shouldCompact,
 } from "../src/core/compaction/index.js";
 import {
