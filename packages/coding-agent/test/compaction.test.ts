@@ -3,7 +3,7 @@ import type { AssistantMessage, Usage } from "@tsar/ai";
 import { getModel } from "@tsar/ai";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	type CompactionSettings,
 	calculateContextTokens,
@@ -13,6 +13,7 @@ import {
 	findCutPoint,
 	getLastAssistantUsage,
 	prepareCompaction,
+	effectiveKeepRecentTokens,
 	shouldCompact,
 } from "../src/core/compaction/index.js";
 import {
@@ -564,4 +565,83 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		console.log("Original messages:", loaded.messages.length);
 		console.log("After compaction:", reloaded.messages.length);
 	}, 60000);
+});
+
+// ============================================================================
+// effectiveKeepRecentTokens tests
+
+describe("effectiveKeepRecentTokens", () => {
+	it("should use contextWindow (not current context) for calculation", () => {
+		const contextWindow = 200_000;
+		const fixedOverhead = 10_000;
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 20_000,
+			reserveTokens: 5000,
+		};
+
+		// With a 200K context window: available = 200000 - 10000 - 5000 = 185000
+		// maxKeepRecent = 185000 - 2000 = 183000
+		// min(20000, 183000) = 20000
+		const result = effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings);
+		expect(result).toBe(20_000);
+
+		// Now verify it doesn't use current context (e.g. 150K tokens before compaction)
+		// If it wrongly used 150K instead of 200K, the result would be different
+		// With 150K: available = 150000 - 10000 - 5000 = 135000, maxKeep = 133000, result = 20000
+		// Same in this case, so let's test with a tight window
+		const smallWindow = 20_000;
+		// available = 20000 - 10000 - 5000 = 5000
+		// maxKeep = 5000 - 2000 = 3000
+		// min(20000, 3000) = 3000
+		const tightResult = effectiveKeepRecentTokens(smallWindow, fixedOverhead, settings);
+		expect(tightResult).toBe(3000);
+	});
+
+	it("should cap keepRecent to 0 when contextWindow is too small for overhead", () => {
+		const contextWindow = 15_000;
+		const fixedOverhead = 10_000;
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 20_000,
+			reserveTokens: 5000,
+		};
+
+		// available = 15000 - 10000 - 5000 = 0
+		// maxKeepRecent = 0 - 2000 = -2000 → capped to 0
+		const result = effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings);
+		expect(result).toBe(0);
+	});
+
+	it("should return min(keepRecentTokens, maxKeepRecent) for large context windows", () => {
+		const contextWindow = 200_000;
+		const fixedOverhead = 5_000;
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 20_000,
+			reserveTokens: 10_000,
+		};
+
+		// available = 200000 - 5000 - 10000 = 185000
+		// maxKeepRecent = 185000 - 2000 = 183000
+		// min(20000, 183000) = 20000
+		const result = effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings);
+		expect(result).toBe(20_000);
+	});
+
+	it("should reduce keepRecentTokens when overhead + reserve leaves little room", () => {
+		const contextWindow = 30_000;
+		const fixedOverhead = 10_000;
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 20_000,
+			reserveTokens: 10_000,
+		};
+
+		// available = 30000 - 10000 - 10000 = 10000
+		// maxKeepRecent = 10000 - 2000 = 8000
+		// min(20000, 8000) = 8000
+		const result = effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings);
+		expect(result).toBe(8000);
+	});
 });

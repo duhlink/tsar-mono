@@ -705,6 +705,7 @@ export function prepareCompaction(
 	settings: CompactionSettings,
 	options: PrepareCompactionOptions = {},
 	fixedOverhead = 0,
+	contextWindow = 0,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -731,7 +732,7 @@ export function prepareCompaction(
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
 	const keepRecent = fixedOverhead
-		? effectiveKeepRecentTokens(tokensBefore, fixedOverhead, settings)
+		? effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings)
 		: settings.keepRecentTokens;
 	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, keepRecent, options);
 
