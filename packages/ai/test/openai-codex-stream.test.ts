@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { streamOpenAICodexResponses } from "../src/providers/openai-codex-responses.js";
+import { CodexStreamError, streamOpenAICodexResponses } from "../src/providers/openai-codex-responses.js";
 import type { Context, Model } from "../src/types.js";
 
 const originalFetch = global.fetch;
@@ -594,5 +594,214 @@ describe("openai-codex streaming", () => {
 		// No sessionId provided
 		const streamResult = streamOpenAICodexResponses(model, context, { apiKey: token });
 		await streamResult.result();
+	});
+
+	// Helper for creating SSE error stream
+	function buildSSEErrorPayload(error: { type: string; code: string; message: string }): string {
+		const event = { type: "error", error };
+		return `data: ${JSON.stringify(event)}\n\n`;
+	}
+
+	// Helper: standard model/context for error tests
+	function makeTestModelAndContext(token: string) {
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+
+		return { model, context };
+	}
+
+	it("extracts error message from nested event.error in SSE stream", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "tsar-codex-stream-"));
+		process.env.TSAR_CODING_AGENT_DIR = tempDir;
+		const token = mockToken();
+		const encoder = new TextEncoder();
+
+		const sseError = buildSSEErrorPayload({
+			type: "server_error",
+			code: "server_error",
+			message: "An error occurred while processing your request",
+		});
+
+		const makeErrorStream = () => new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode(sseError));
+				controller.close();
+			},
+		});
+
+		const fetchMock = vi.fn(async (input: string | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url === "https://api.github.com/repos/openai/codex/releases/latest") {
+				return new Response(JSON.stringify({ tag_name: "rust-v0.0.0" }), { status: 200 });
+			}
+			if (url.startsWith("https://raw.githubusercontent.com/openai/codex/")) {
+				return new Response("PROMPT", { status: 200, headers: { etag: '"etag"' } });
+			}
+			if (url === "https://chatgpt.com/backend-api/codex/responses") {
+				return new Response(makeErrorStream(), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		});
+
+		global.fetch = fetchMock as typeof fetch;
+
+		const { model, context } = makeTestModelAndContext(token);
+		const streamResult = streamOpenAICodexResponses(model, context, { apiKey: token });
+
+		const events: Array<{ type: string; error?: unknown }> = [];
+		for await (const event of streamResult) {
+			events.push(event as { type: string; error?: unknown });
+		}
+
+		// Should see an error event with the nested message
+		const errorEvent = events.find((e) => e.type === "error");
+		expect(errorEvent).toBeDefined();
+
+		// The error message should contain the nested message, not a raw JSON blob
+		const errorMessage = (errorEvent!.error as { errorMessage?: string })?.errorMessage ?? "";
+		expect(errorMessage).toContain("Codex error: An error occurred while processing your request");
+	});
+
+	it("retries on retryable SSE stream errors (server_error) and succeeds on second attempt", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "tsar-codex-stream-"));
+		process.env.TSAR_CODING_AGENT_DIR = tempDir;
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		const { model, context } = makeTestModelAndContext(token);
+
+		let callCount = 0;
+
+		const sseError = buildSSEErrorPayload({
+			type: "server_error",
+			code: "server_error",
+			message: "Internal server error",
+		});
+
+		const successSSE = buildSSEPayload({ status: "completed" });
+
+		const fetchMock = vi.fn(async (input: string | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url === "https://api.github.com/repos/openai/codex/releases/latest") {
+				return new Response(JSON.stringify({ tag_name: "rust-v0.0.0" }), { status: 200 });
+			}
+			if (url.startsWith("https://raw.githubusercontent.com/openai/codex/")) {
+				return new Response("PROMPT", { status: 200, headers: { etag: '"etag"' } });
+			}
+			if (url === "https://chatgpt.com/backend-api/codex/responses") {
+				callCount++;
+				if (callCount === 1) {
+					// First call: return error in SSE stream
+					const errorStream = new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(encoder.encode(sseError));
+							controller.close();
+						},
+					});
+					return new Response(errorStream, {
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					});
+				}
+				// Second call: return success
+				const successStream = new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode(successSSE));
+						controller.close();
+					},
+				});
+				return new Response(successStream, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		});
+
+		global.fetch = fetchMock as typeof fetch;
+
+		const streamResult = streamOpenAICodexResponses(model, context, { apiKey: token });
+		const result = await streamResult.result();
+
+		// Should have retried and succeeded
+		expect(callCount).toBe(2);
+		expect(result.content.find((c) => c.type === "text")?.text).toBe("Hello");
+		expect(result.stopReason).toBe("stop");
+	});
+
+	it("does not retry non-retryable SSE stream errors", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "tsar-codex-stream-"));
+		process.env.TSAR_CODING_AGENT_DIR = tempDir;
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		const { model, context } = makeTestModelAndContext(token);
+
+		let callCount = 0;
+
+		// Use an error code that is NOT retryable and won't be intercepted by classifyAuthError
+		const sseError = buildSSEErrorPayload({
+			type: "content_policy",
+			code: "content_policy_violation",
+			message: "Content policy violation detected",
+		});
+
+		const fetchMock = vi.fn(async (input: string | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url === "https://api.github.com/repos/openai/codex/releases/latest") {
+				return new Response(JSON.stringify({ tag_name: "rust-v0.0.0" }), { status: 200 });
+			}
+			if (url.startsWith("https://raw.githubusercontent.com/openai/codex/")) {
+				return new Response("PROMPT", { status: 200, headers: { etag: '"etag"' } });
+			}
+			if (url === "https://chatgpt.com/backend-api/codex/responses") {
+				callCount++;
+				const errorStream = new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode(sseError));
+						controller.close();
+					},
+				});
+				return new Response(errorStream, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		});
+
+		global.fetch = fetchMock as typeof fetch;
+
+		const streamResult = streamOpenAICodexResponses(model, context, { apiKey: token });
+
+		const events: Array<{ type: string; error?: unknown }> = [];
+		for await (const event of streamResult) {
+			events.push(event as { type: string; error?: unknown });
+		}
+
+		// Should NOT have retried - only 1 fetch call
+		expect(callCount).toBe(1);
+
+		// Should have error event with the proper message
+		const errorEvent = events.find((e) => e.type === "error");
+		expect(errorEvent).toBeDefined();
+		const errorMessage = (errorEvent!.error as { errorMessage?: string })?.errorMessage ?? "";
+		expect(errorMessage).toContain("Codex error: Content policy violation detected");
 	});
 });

@@ -39,6 +39,20 @@ const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
+
+/** Error thrown when the Codex API sends an error event in the SSE stream. */
+export class CodexStreamError extends Error {
+	readonly isRetryable: boolean;
+	readonly errorCode: string;
+
+	constructor(message: string, errorCode: string, isRetryable: boolean = true) {
+		super(message);
+		this.name = "CodexStreamError";
+		this.errorCode = errorCode;
+		this.isRetryable = isRetryable;
+	}
+}
+
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 
 const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
@@ -134,6 +148,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			timestamp: Date.now(),
 		};
 
+
 		try {
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
 			if (!apiKey) {
@@ -191,9 +206,23 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 				}
 			}
 
-			// Fetch with retry logic for rate limits and transient errors
+			function resetOutputState(o: AssistantMessage): void {
+				o.content = [];
+				o.stopReason = "stop";
+				o.usage = {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			};
+			}
+
+			// Fetch + stream processing with retry for both HTTP and SSE-level errors
 			let response: Response | undefined;
 			let lastError: Error | undefined;
+			let startPushed = false;
 
 			for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 				if (options?.signal?.aborted) {
@@ -208,24 +237,39 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						signal: options?.signal,
 					});
 
-					if (response.ok) {
-						break;
+					if (!response.ok) {
+						const errorText = await response.text();
+						if (attempt < MAX_RETRIES && isRetryableError(response.status, errorText)) {
+							const delayMs = BASE_DELAY_MS * 2 ** attempt;
+							await sleep(delayMs, options?.signal);
+							continue;
+						}
+						const fakeResponse = new Response(errorText, {
+							status: response.status,
+							statusText: response.statusText,
+						});
+						const info = await parseErrorResponse(fakeResponse);
+						throw new Error(info.friendlyMessage || info.message);
 					}
 
-					const errorText = await response.text();
-					if (attempt < MAX_RETRIES && isRetryableError(response.status, errorText)) {
-						const delayMs = BASE_DELAY_MS * 2 ** attempt;
-						await sleep(delayMs, options?.signal);
-						continue;
+					if (!response.body) {
+						throw new Error("No response body");
 					}
 
-					// Parse error for friendly message on final attempt or non-retryable error
-					const fakeResponse = new Response(errorText, {
-						status: response.status,
-						statusText: response.statusText,
-					});
-					const info = await parseErrorResponse(fakeResponse);
-					throw new Error(info.friendlyMessage || info.message);
+					if (!startPushed) {
+						stream.push({ type: "start", partial: output });
+						startPushed = true;
+					}
+					await processStream(response, output, stream, model);
+
+					if (options?.signal?.aborted) {
+						throw new Error("Request was aborted");
+					}
+
+					// Success - emit done and return
+					stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
+					stream.end();
+					return;
 				} catch (error) {
 					if (error instanceof Error) {
 						if (error.name === "AbortError" || error.message === "Request was aborted") {
@@ -233,8 +277,21 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						}
 					}
 					lastError = error instanceof Error ? error : new Error(String(error));
-					// Network errors are retryable
-					if (attempt < MAX_RETRIES && !lastError.message.includes("usage limit")) {
+
+					// Check if this is a retryable SSE stream error
+					const isStreamError = error instanceof CodexStreamError;
+					const isStreamRetry = isStreamError && error.isRetryable;
+
+					// Non-retryable stream errors should not fall through to generic retry
+					const canRetry = isStreamRetry || (!isStreamError && !lastError.message.includes("usage limit"));
+
+					if (attempt < MAX_RETRIES && canRetry) {
+
+						// Reset partial output state before retrying
+						if (isStreamRetry) {
+							resetOutputState(output);
+							startPushed = false;
+						}
 						const delayMs = BASE_DELAY_MS * 2 ** attempt;
 						await sleep(delayMs, options?.signal);
 						continue;
@@ -243,23 +300,9 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 				}
 			}
 
-			if (!response?.ok) {
-				throw lastError ?? new Error("Failed after retries");
-			}
+			// Should not reach here, but handle gracefully
+			throw lastError ?? new Error("Failed after retries");
 
-			if (!response.body) {
-				throw new Error("No response body");
-			}
-
-			stream.push({ type: "start", partial: output });
-			await processStream(response, output, stream, model);
-
-			if (options?.signal?.aborted) {
-				throw new Error("Request was aborted");
-			}
-
-			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
-			stream.end();
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			const authClassification = classifyAuthError(error, model.provider);
@@ -383,11 +426,17 @@ async function* mapCodexEvents(events: AsyncIterable<Record<string, unknown>>): 
 		if (!type) continue;
 
 		if (type === "error") {
-			const code = (event as { code?: string }).code || "";
-			const message = (event as { message?: string }).message || "";
-			throw new Error(`Codex error: ${message || code || JSON.stringify(event)}`);
+			// Codex error events nest details inside event.error, not at top level
+			const errorObj = (event as { error?: { code?: string; message?: string; type?: string } }).error;
+			const code = errorObj?.code || (event as { code?: string }).code || "";
+			const message = errorObj?.message || (event as { message?: string }).message || "";
+			const isRetryable = /server_error|overloaded|rate.?limit|internal.?error/i.test(code);
+			throw new CodexStreamError(
+				`Codex error: ${message || code || JSON.stringify(event)}`,
+				code,
+				isRetryable,
+			);
 		}
-
 		if (type === "response.failed") {
 			const msg = (event as { response?: { error?: { message?: string } } }).response?.error?.message;
 			throw new Error(msg || "Codex response failed");
