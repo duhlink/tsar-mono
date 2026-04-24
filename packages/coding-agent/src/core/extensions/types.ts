@@ -468,6 +468,15 @@ export interface SessionCompactEvent {
 	fromExtension: boolean;
 }
 
+/** Fired after context compaction completes, with before/after metrics */
+export interface SessionAfterCompactEvent {
+	type: "session_after_compact";
+	tokensBefore: number;
+	tokensAfter: number;
+	messagesRemoved: number;
+	compactionCount: number;
+}
+
 /** Fired on process exit */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
@@ -513,6 +522,7 @@ export type SessionEvent =
 	| SessionForkEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
+	| SessionAfterCompactEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -1005,6 +1015,7 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_after_compact", handler: ExtensionHandler<SessionAfterCompactEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;

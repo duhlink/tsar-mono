@@ -240,6 +240,7 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	private _compactionCount = 0;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -1674,6 +1675,7 @@ export class AgentSession {
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
+			const messagesBeforeCompact = this.agent.state.messages.length;
 			this.agent.replaceMessages(sessionContext.messages);
 
 			// Get the saved compaction entry for the extension event
@@ -1689,6 +1691,20 @@ export class AgentSession {
 					type: "session_compact",
 					compactionEntry: savedCompactionEntry,
 					fromExtension,
+				});
+			}
+
+			this._compactionCount++;
+			const tokensAfterEstimate = estimateContextTokens(this.agent.state.messages);
+			const messagesRemoved = messagesBeforeCompact - this.agent.state.messages.length;
+
+			if (this._extensionRunner) {
+				await this._extensionRunner.emit({
+					type: "session_after_compact",
+					tokensBefore,
+					tokensAfter: tokensAfterEstimate.tokens,
+					messagesRemoved,
+					compactionCount: this._compactionCount,
 				});
 			}
 
@@ -1983,6 +1999,7 @@ export class AgentSession {
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
+			const messagesBeforeAutoCompact = this.agent.state.messages.length;
 			this.agent.replaceMessages(sessionContext.messages);
 
 			// Post-compaction size verification for overflow retries
@@ -2016,6 +2033,20 @@ export class AgentSession {
 					fromExtension,
 				})) as { autoContinue?: boolean } | undefined;
 				extensionAutoContinue = compactResult?.autoContinue === true;
+			}
+
+			this._compactionCount++;
+			const autoTokensAfterEstimate = estimateContextTokens(this.agent.state.messages);
+			const autoMessagesRemoved = messagesBeforeAutoCompact - this.agent.state.messages.length;
+
+			if (this._extensionRunner) {
+				await this._extensionRunner.emit({
+					type: "session_after_compact",
+					tokensBefore,
+					tokensAfter: autoTokensAfterEstimate.tokens,
+					messagesRemoved: autoMessagesRemoved,
+					compactionCount: this._compactionCount,
+				});
 			}
 
 			if (willRetry && !this._normalizePostCompactionRetryMessages()) {

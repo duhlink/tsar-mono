@@ -14,6 +14,7 @@ import {
 	createExtensionRuntime,
 	type Extension,
 	type SessionBeforeCompactEvent,
+	type SessionAfterCompactEvent,
 	type SessionCompactEvent,
 	type SessionEvent,
 } from "../src/core/extensions/index.js";
@@ -411,5 +412,136 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 
 		expect(result.summary).toBe(customSummary);
 		expect(result.tokensBefore).toBe(999);
+	}, 120000);
+
+	it("should fire session_after_compact after manual compaction", async () => {
+		let afterCompactEvent: SessionAfterCompactEvent | null = null;
+
+		const extension: Extension = {
+			path: "test-after-compact",
+			resolvedPath: "/test/test-after-compact.ts",
+			sourceInfo: createSyntheticSourceInfo("<test:test-after-compact>", { source: "test" }),
+			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+				[
+					"session_before_compact",
+					[
+						async (event: SessionBeforeCompactEvent) => {
+							capturedEvents.push(event);
+							return undefined;
+						},
+					],
+				],
+				[
+					"session_compact",
+					[
+						async (event: SessionCompactEvent) => {
+							capturedEvents.push(event);
+							return undefined;
+						},
+					],
+				],
+				[
+					"session_after_compact",
+					[
+						async (event: SessionAfterCompactEvent) => {
+							afterCompactEvent = event;
+							capturedEvents.push(event);
+							return undefined;
+						},
+					],
+				],
+			]),
+			tools: new Map(),
+			messageRenderers: new Map(),
+			commands: new Map(),
+			flags: new Map(),
+			shortcuts: new Map(),
+		};
+
+		createSession([extension]);
+
+		await session.prompt("What is 2+2? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.prompt("What is 3+3? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.compact();
+
+		expect(afterCompactEvent).not.toBeNull();
+		expect(afterCompactEvent!.type).toBe("session_after_compact");
+		expect(afterCompactEvent!.tokensBefore).toBeGreaterThan(0);
+		expect(afterCompactEvent!.tokensAfter).toBeGreaterThan(0);
+		expect(afterCompactEvent!.tokensBefore).toBeGreaterThan(afterCompactEvent!.tokensAfter);
+		expect(afterCompactEvent!.messagesRemoved).toBeGreaterThan(0);
+		expect(afterCompactEvent!.compactionCount).toBe(1);
+
+		// Verify ordering: session_before_compact → session_compact → session_after_compact
+		const types = capturedEvents.map((e) => e.type);
+		const beforeIdx = types.indexOf("session_before_compact");
+		const compactIdx = types.indexOf("session_compact");
+		const afterIdx = types.indexOf("session_after_compact");
+		expect(beforeIdx).toBeLessThan(compactIdx);
+		expect(compactIdx).toBeLessThan(afterIdx);
+	}, 120000);
+
+	it("should include compactionCount incrementing with consecutive compactions", async () => {
+		const afterCompactEvents: SessionAfterCompactEvent[] = [];
+
+		const extension: Extension = {
+			path: "test-count-compact",
+			resolvedPath: "/test/test-count-compact.ts",
+			sourceInfo: createSyntheticSourceInfo("<test:test-count-compact>", { source: "test" }),
+			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+				[
+					"session_before_compact",
+					[
+						async (event: SessionBeforeCompactEvent) => {
+							capturedEvents.push(event);
+							return undefined;
+						},
+					],
+				],
+				[
+					"session_after_compact",
+					[
+						async (event: SessionAfterCompactEvent) => {
+							afterCompactEvents.push(event);
+							capturedEvents.push(event);
+							return undefined;
+						},
+					],
+				],
+			]),
+			tools: new Map(),
+			messageRenderers: new Map(),
+			commands: new Map(),
+			flags: new Map(),
+			shortcuts: new Map(),
+		};
+
+		createSession([extension]);
+
+		// First compaction
+		await session.prompt("What is 2+2? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.prompt("What is 3+3? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.compact();
+		expect(afterCompactEvents.length).toBe(1);
+		expect(afterCompactEvents[0].compactionCount).toBe(1);
+
+		// Second compaction - need more messages
+		await session.prompt("What is 4+4? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.prompt("What is 5+5? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.compact();
+		expect(afterCompactEvents.length).toBe(2);
+		expect(afterCompactEvents[1].compactionCount).toBe(2);
 	}, 120000);
 });
