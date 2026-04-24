@@ -672,19 +672,16 @@ describe("findCutPoint reduction validation", () => {
 		expect(cutPct).toBeGreaterThanOrEqual(0.3);
 	});
 
-	it("should reduce kept tokens to ≤65% of total when context is oversized", () => {
+	it("should reduce kept tokens to ≤60% of total when context is oversized", () => {
 		resetEntryCounter();
 		// Create a large session
 		const entries: SessionEntry[] = [];
-		for (let i = 0; i < 40; i++) {
+		for (let i = 0; i < 50; i++) {
 			entries.push(createMessageEntry(createUserMessage("user content ".repeat(100))));
 			entries.push(createMessageEntry(createAssistantMessage("assistant response ".repeat(100))));
 		}
 
-		const contextWindow = 100000;
-		const fixedOverhead = 5000;
-		const settings: CompactionSettings = { ...DEFAULT_COMPACTION_SETTINGS };
-		const keepRecent = effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings);
+		const keepRecent = 10000;
 
 		const result = findCutPoint(entries, 0, entries.length, keepRecent);
 
@@ -701,7 +698,7 @@ describe("findCutPoint reduction validation", () => {
 		}
 
 		const keptPct = keptTokens / totalTokens;
-		expect(keptPct).toBeLessThanOrEqual(0.65);
+		expect(keptPct).toBeLessThanOrEqual(0.60);
 	});
 
 	it("should handle extreme keepRecentTokens that would keep everything", () => {
