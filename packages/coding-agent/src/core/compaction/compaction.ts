@@ -529,6 +529,21 @@ export function findCutPoint(
 		);
 	}
 
+		// Instrumentation: always log final cut decision
+		const totalEntries = endIndex - startIndex;
+		const cutCount = cutIndex - startIndex;
+		const keptCount = totalEntries - cutCount;
+		const cutPct = totalEntries > 0 ? (cutCount / totalEntries * 100).toFixed(0) : '0';
+		console.error(
+			`[compaction] findCutPoint result: cut ${cutCount}/${totalEntries} entries (${cutPct}%), kept ${keptCount} entries, accumulatedTokens=${accumulatedTokens}, keepRecent=${keepRecentTokens}, cutIndex=${cutIndex}`,
+		);
+		if (keptCount > totalEntries * 0.7 && totalEntries > 0) {
+			console.warn(
+				`[compaction] findCutPoint WARNING: kept ${keptCount}/${totalEntries} entries (${(keptCount / totalEntries * 100).toFixed(0)}%) — cut is ineffective. ` +
+				`accumulatedTokens=${accumulatedTokens}, keepRecent=${keepRecentTokens}, cutIndex=${cutIndex}, cutPoints=${cutPoints.length}`,
+			);
+		}
+
 	return {
 		firstKeptEntryIndex: cutIndex,
 		turnStartIndex,

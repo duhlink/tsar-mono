@@ -11,6 +11,7 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 	effectiveKeepRecentTokens,
 	estimateContextTokens,
+	estimateTokens,
 	findCutPoint,
 	getLastAssistantUsage,
 	prepareCompaction,
@@ -643,5 +644,84 @@ describe("effectiveKeepRecentTokens", () => {
 		// min(20000, 8000) = 8000
 		const result = effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings);
 		expect(result).toBe(8000);
+	});
+});
+
+
+// ============================================================================
+// findCutPoint reduction validation tests
+// ============================================================================
+
+describe("findCutPoint reduction validation", () => {
+	it("should cut at least 30% of messages when context is oversized", () => {
+		resetEntryCounter();
+		// Create 50 user/assistant pairs with ~500 tokens each (~2000 chars)
+		const entries: SessionEntry[] = [];
+		for (let i = 0; i < 50; i++) {
+			entries.push(createMessageEntry(createUserMessage("x".repeat(2000))));
+			entries.push(createMessageEntry(createAssistantMessage("y".repeat(2000))));
+		}
+
+		// keepRecentTokens = 5000 (budget for ~10 messages = ~2.5 pairs)
+		const result = findCutPoint(entries, 0, entries.length, 5000);
+
+		// Should cut at least 30% of entries
+		const totalRange = entries.length; // endIndex - startIndex = 100
+		const cutCount = result.firstKeptEntryIndex;
+		const cutPct = cutCount / totalRange;
+		expect(cutPct).toBeGreaterThanOrEqual(0.3);
+	});
+
+	it("should reduce kept tokens to ≤65% of total when context is oversized", () => {
+		resetEntryCounter();
+		// Create a large session
+		const entries: SessionEntry[] = [];
+		for (let i = 0; i < 40; i++) {
+			entries.push(createMessageEntry(createUserMessage("user content ".repeat(100))));
+			entries.push(createMessageEntry(createAssistantMessage("assistant response ".repeat(100))));
+		}
+
+		const contextWindow = 100000;
+		const fixedOverhead = 5000;
+		const settings: CompactionSettings = { ...DEFAULT_COMPACTION_SETTINGS };
+		const keepRecent = effectiveKeepRecentTokens(contextWindow, fixedOverhead, settings);
+
+		const result = findCutPoint(entries, 0, entries.length, keepRecent);
+
+		// Count tokens in kept entries (from cutPoint to end)
+		let keptTokens = 0;
+		let totalTokens = 0;
+		for (let i = 0; i < entries.length; i++) {
+			const msg = (entries[i] as SessionMessageEntry).message;
+			const tokens = estimateTokens(msg);
+			totalTokens += tokens;
+			if (i >= result.firstKeptEntryIndex) {
+				keptTokens += tokens;
+			}
+		}
+
+		const keptPct = keptTokens / totalTokens;
+		expect(keptPct).toBeLessThanOrEqual(0.65);
+	});
+
+	it("should handle extreme keepRecentTokens that would keep everything", () => {
+		resetEntryCounter();
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Hello")),
+			createMessageEntry(createAssistantMessage("Hi")),
+			createMessageEntry(createUserMessage("How are you?")),
+			createMessageEntry(createAssistantMessage("Good")),
+		];
+
+		// Set keepRecentTokens much larger than total session tokens
+		const totalTokens = entries.reduce((sum, e) => {
+			const msg = (e as SessionMessageEntry).message;
+			return sum + estimateTokens(msg);
+		}, 0);
+
+		const result = findCutPoint(entries, 0, entries.length, totalTokens * 100);
+
+		// Should keep everything (firstKeptEntryIndex = 0)
+		expect(result.firstKeptEntryIndex).toBe(0);
 	});
 });
