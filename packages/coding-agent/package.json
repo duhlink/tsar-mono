@@ -41,10 +41,10 @@
 	},
 	"dependencies": {
 		"@mariozechner/jiti": "^2.6.2",
+		"@silvia-odwyer/photon-node": "^0.3.4",
 		"@tsar/agent-core": "^0.63.1",
 		"@tsar/ai": "^0.63.1",
 		"@tsar/tui": "^0.63.1",
-		"@silvia-odwyer/photon-node": "^0.3.4",
 		"ajv": "^8.17.1",
 		"chalk": "^5.5.0",
 		"cli-highlight": "^2.1.11",
@@ -58,7 +58,7 @@
 		"minimatch": "^10.2.3",
 		"proper-lockfile": "^4.1.2",
 		"strip-ansi": "^7.1.0",
-		"undici": "^7.19.1",
+		"undici": "^7.25.0",
 		"yaml": "^2.8.2"
 	},
 	"overrides": {
