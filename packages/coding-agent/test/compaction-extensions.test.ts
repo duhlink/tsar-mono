@@ -13,8 +13,8 @@ import { AuthStorage } from "../src/core/auth-storage.js";
 import {
 	createExtensionRuntime,
 	type Extension,
-	type SessionBeforeCompactEvent,
 	type SessionAfterCompactEvent,
+	type SessionBeforeCompactEvent,
 	type SessionCompactEvent,
 	type SessionEvent,
 } from "../src/core/extensions/index.js";

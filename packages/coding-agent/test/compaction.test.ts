@@ -3,7 +3,7 @@ import type { AssistantMessage, Usage } from "@tsar/ai";
 import { getModel } from "@tsar/ai";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
 	type CompactionSettings,
 	calculateContextTokens,
@@ -647,7 +647,6 @@ describe("effectiveKeepRecentTokens", () => {
 	});
 });
 
-
 // ============================================================================
 // findCutPoint reduction validation tests
 // ============================================================================
@@ -698,7 +697,7 @@ describe("findCutPoint reduction validation", () => {
 		}
 
 		const keptPct = keptTokens / totalTokens;
-		expect(keptPct).toBeLessThanOrEqual(0.60);
+		expect(keptPct).toBeLessThanOrEqual(0.6);
 	});
 
 	it("should handle extreme keepRecentTokens that would keep everything", () => {

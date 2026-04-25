@@ -2048,7 +2048,6 @@ export class AgentSession {
 				extensionAutoContinue = compactResult?.autoContinue === true;
 			}
 
-
 			if (willRetry && !this._normalizePostCompactionRetryMessages()) {
 				this._emit({
 					type: "compaction_end",

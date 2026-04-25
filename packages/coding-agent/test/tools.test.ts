@@ -642,10 +642,8 @@ describe("Coding Agent Tools", () => {
 		});
 
 		it("should treat newline-terminated 500 and 501 line outputs honestly at the truncateTail boundary", () => {
-			const exactly500 =
-				Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
-			const exactly501 =
-				Array.from({ length: 501 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n";
+			const exactly500 = `${Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n")}\n`;
+			const exactly501 = `${Array.from({ length: 501 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n")}\n`;
 
 			const noTruncation = truncateTail(exactly500, { maxLines: BASH_MAX_LINES, maxBytes: Number.MAX_SAFE_INTEGER });
 			expect(noTruncation.truncated).toBe(false);
@@ -672,7 +670,7 @@ describe("Coding Agent Tools", () => {
 
 			expect(result.details?.truncation).toBeUndefined();
 			expect(output).toBe(
-				Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n") + "\n",
+				`${Array.from({ length: 500 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}`).join("\n")}\n`,
 			);
 		});
 

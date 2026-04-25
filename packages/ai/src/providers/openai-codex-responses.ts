@@ -148,7 +148,6 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			timestamp: Date.now(),
 		};
 
-
 		try {
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
 			if (!apiKey) {
@@ -210,13 +209,13 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 				o.content = [];
 				o.stopReason = "stop";
 				o.usage = {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			};
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				};
 			}
 
 			// Fetch + stream processing with retry for both HTTP and SSE-level errors
@@ -267,7 +266,11 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 					}
 
 					// Success - emit done and return
-					stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
+					stream.push({
+						type: "done",
+						reason: output.stopReason as "stop" | "length" | "toolUse",
+						message: output,
+					});
 					stream.end();
 					return;
 				} catch (error) {
@@ -286,7 +289,6 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 					const canRetry = isStreamRetry || (!isStreamError && !lastError.message.includes("usage limit"));
 
 					if (attempt < MAX_RETRIES && canRetry) {
-
 						// Reset partial output state before retrying
 						if (isStreamRetry) {
 							resetOutputState(output);
@@ -302,7 +304,6 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 
 			// Should not reach here, but handle gracefully
 			throw lastError ?? new Error("Failed after retries");
-
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			const authClassification = classifyAuthError(error, model.provider);
@@ -431,11 +432,7 @@ async function* mapCodexEvents(events: AsyncIterable<Record<string, unknown>>): 
 			const code = errorObj?.code || (event as { code?: string }).code || "";
 			const message = errorObj?.message || (event as { message?: string }).message || "";
 			const isRetryable = /server_error|overloaded|rate.?limit|internal.?error/i.test(code);
-			throw new CodexStreamError(
-				`Codex error: ${message || code || JSON.stringify(event)}`,
-				code,
-				isRetryable,
-			);
+			throw new CodexStreamError(`Codex error: ${message || code || JSON.stringify(event)}`, code, isRetryable);
 		}
 		if (type === "response.failed") {
 			const msg = (event as { response?: { error?: { message?: string } } }).response?.error?.message;

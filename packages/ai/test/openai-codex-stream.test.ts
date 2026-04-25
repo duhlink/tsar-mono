@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexStreamError, streamOpenAICodexResponses } from "../src/providers/openai-codex-responses.js";
+import { streamOpenAICodexResponses } from "../src/providers/openai-codex-responses.js";
 import type { Context, Model } from "../src/types.js";
 
 const originalFetch = global.fetch;
@@ -603,7 +603,7 @@ describe("openai-codex streaming", () => {
 	}
 
 	// Helper: standard model/context for error tests
-	function makeTestModelAndContext(token: string) {
+	function makeTestModelAndContext(_token: string) {
 		const model: Model<"openai-codex-responses"> = {
 			id: "gpt-5.1-codex",
 			name: "GPT-5.1 Codex",
@@ -637,12 +637,13 @@ describe("openai-codex streaming", () => {
 			message: "An error occurred while processing your request",
 		});
 
-		const makeErrorStream = () => new ReadableStream<Uint8Array>({
-			start(controller) {
-				controller.enqueue(encoder.encode(sseError));
-				controller.close();
-			},
-		});
+		const makeErrorStream = () =>
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode(sseError));
+					controller.close();
+				},
+			});
 
 		const fetchMock = vi.fn(async (input: string | URL) => {
 			const url = typeof input === "string" ? input : input.toString();
