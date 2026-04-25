@@ -124,6 +124,9 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	keepRecentTokens: 20000,
 };
 
+/** Threshold above which a cut is considered ineffective (kept > 70% of entries). */
+const INEFFECTIVE_CUT_THRESHOLD = 0.7;
+
 // ============================================================================
 // Token calculation
 // ============================================================================
@@ -537,7 +540,7 @@ export function findCutPoint(
 	console.error(
 		`[compaction] findCutPoint result: cut ${cutCount}/${totalEntries} entries (${cutPct}%), kept ${keptCount} entries, accumulatedTokens=${accumulatedTokens}, keepRecent=${keepRecentTokens}, cutIndex=${cutIndex}`,
 	);
-	if (keptCount > totalEntries * 0.7 && totalEntries > 0) {
+	if (keptCount > totalEntries * INEFFECTIVE_CUT_THRESHOLD && totalEntries > 0) {
 		console.warn(
 			`[compaction] findCutPoint WARNING: kept ${keptCount}/${totalEntries} entries (${((keptCount / totalEntries) * 100).toFixed(0)}%) — cut is ineffective. ` +
 				`accumulatedTokens=${accumulatedTokens}, keepRecent=${keepRecentTokens}, cutIndex=${cutIndex}, cutPoints=${cutPoints.length}`,
