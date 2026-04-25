@@ -1,7 +1,7 @@
 #!/bin/sh
    
    # Prevent node_modules from being tracked (recurring issue)
-   if git diff --cached --name-only | grep -q "^.node_modules"; then
+   if git diff --cached --name-only | grep -q "^node_modules"; then
      echo "ERROR: node_modules must not be tracked. Run: git rm --cached node_modules"
      exit 1
    fi

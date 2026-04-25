@@ -2006,15 +2006,6 @@ export class AgentSession {
 			const autoTokensAfterEstimate = estimateContextTokens(this.agent.state.messages);
 			const autoMessagesRemoved = messagesBeforeAutoCompact - this.agent.state.messages.length;
 
-			if (this._extensionRunner) {
-				await this._extensionRunner.emit({
-					type: "session_after_compact",
-					tokensBefore,
-					tokensAfter: autoTokensAfterEstimate.tokens,
-					messagesRemoved: autoMessagesRemoved,
-					compactionCount: this._compactionCount,
-				});
-			}
 			// Post-compaction size verification for overflow retries
 			// If compacted context still exceeds window, the retry will also overflow.
 			// Signal this clearly rather than wasting an API call.
@@ -2046,6 +2037,16 @@ export class AgentSession {
 					fromExtension,
 				})) as { autoContinue?: boolean } | undefined;
 				extensionAutoContinue = compactResult?.autoContinue === true;
+			}
+
+			if (this._extensionRunner) {
+				await this._extensionRunner.emit({
+					type: "session_after_compact",
+					tokensBefore,
+					tokensAfter: autoTokensAfterEstimate.tokens,
+					messagesRemoved: autoMessagesRemoved,
+					compactionCount: this._compactionCount,
+				});
 			}
 
 			if (willRetry && !this._normalizePostCompactionRetryMessages()) {
