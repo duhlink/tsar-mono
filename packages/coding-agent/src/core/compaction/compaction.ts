@@ -286,6 +286,8 @@ export function shouldCompact(
 // Cut point detection
 // ============================================================================
 
+const IMAGE_BLOCK_CHAR_ESTIMATE = 4800;
+
 /**
  * Estimate token count for a message using chars/4 heuristic.
  * This is conservative (overestimates tokens).
@@ -302,6 +304,9 @@ export function estimateTokens(message: AgentMessage): number {
 				for (const block of content) {
 					if (block.type === "text" && block.text) {
 						chars += block.text.length;
+					}
+					if (block.type === "image") {
+						chars += IMAGE_BLOCK_CHAR_ESTIMATE;
 					}
 				}
 			}
@@ -330,7 +335,7 @@ export function estimateTokens(message: AgentMessage): number {
 						chars += block.text.length;
 					}
 					if (block.type === "image") {
-						chars += 4800; // Estimate images as 4000 chars, or 1200 tokens
+						chars += IMAGE_BLOCK_CHAR_ESTIMATE; // Estimate images as 4800 chars, or 1200 tokens
 					}
 				}
 			}

@@ -2,24 +2,165 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@tsar/agent-core";
-import { type AssistantMessage, getModel, type ToolResultMessage } from "@tsar/ai";
+import { type AssistantMessage, getModel, type ImageContent, type ToolResultMessage } from "@tsar/ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import type { CompactionPreparation } from "../src/core/compaction/compaction.js";
 import * as compactionModule from "../src/core/compaction/index.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
+interface MockUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens?: number;
+}
+
+interface MockTextBlock {
+	type: "text";
+	text: string;
+}
+
+interface MockImageBlock {
+	type: "image";
+	data?: string;
+	mimeType?: string;
+}
+
+interface MockThinkingBlock {
+	type: "thinking";
+	thinking: string;
+}
+
+interface MockToolCallBlock {
+	type: "toolCall";
+	name: string;
+	arguments?: unknown;
+}
+
+type MockContentBlock = MockTextBlock | MockImageBlock | MockThinkingBlock | MockToolCallBlock;
+
+interface MockEstimateMessage {
+	role: string;
+	content?: string | MockContentBlock[];
+	summary?: string;
+	command?: string;
+	output?: string;
+	usage?: MockUsage;
+	stopReason?: string;
+}
+
+const IMAGE_BLOCK_CHAR_ESTIMATE = 4800;
+
+function calculateMockContextTokens(usage: MockUsage): number {
+	return usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+}
+
+function estimateMockTokens(message: MockEstimateMessage): number {
+	let chars = 0;
+
+	switch (message.role) {
+		case "user":
+		case "custom":
+		case "toolResult": {
+			if (typeof message.content === "string") {
+				chars = message.content.length;
+			} else if (Array.isArray(message.content)) {
+				for (const block of message.content) {
+					if (block.type === "text") {
+						chars += block.text.length;
+					} else if (block.type === "image") {
+						chars += IMAGE_BLOCK_CHAR_ESTIMATE;
+					}
+				}
+			}
+			return Math.ceil(chars / 4);
+		}
+		case "assistant": {
+			if (Array.isArray(message.content)) {
+				for (const block of message.content) {
+					if (block.type === "text") {
+						chars += block.text.length;
+					} else if (block.type === "thinking") {
+						chars += block.thinking.length;
+					} else if (block.type === "toolCall") {
+						chars += block.name.length + JSON.stringify(block.arguments ?? {}).length;
+					}
+				}
+			}
+			return Math.ceil(chars / 4);
+		}
+		case "bashExecution": {
+			chars = (message.command ?? "").length + (message.output ?? "").length;
+			return Math.ceil(chars / 4);
+		}
+		case "branchSummary":
+		case "compactionSummary": {
+			return Math.ceil((message.summary ?? "").length / 4);
+		}
+		default:
+			return 0;
+	}
+}
+
+function estimateMockContextTokens(messages: MockEstimateMessage[]) {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role === "assistant" && msg.stopReason !== "error" && msg.stopReason !== "aborted" && msg.usage) {
+			const usageTokens = calculateMockContextTokens(msg.usage);
+			let trailingTokens = 0;
+			for (let j = i + 1; j < messages.length; j++) {
+				trailingTokens += estimateMockTokens(messages[j]);
+			}
+			return {
+				tokens: usageTokens + trailingTokens,
+				usageTokens,
+				trailingTokens,
+				lastUsageIndex: i,
+			};
+		}
+	}
+
+	let estimated = 0;
+	for (const message of messages) {
+		estimated += estimateMockTokens(message);
+	}
+
+	return {
+		tokens: estimated,
+		usageTokens: 0,
+		trailingTokens: estimated,
+		lastUsageIndex: null,
+	};
+}
+
+function createMockCompactionPreparation(firstKeptEntryId = "entry-1"): CompactionPreparation {
+	return {
+		firstKeptEntryId,
+		messagesToSummarize: [],
+		turnPrefixMessages: [],
+		isSplitTurn: false,
+		tokensBefore: 100,
+		fileOps: {
+			read: new Set(),
+			written: new Set(),
+			edited: new Set(),
+		},
+		settings: {
+			enabled: true,
+			reserveTokens: 16384,
+			keepRecentTokens: 20000,
+		},
+	};
+}
+
 vi.mock("../src/core/compaction/index.js", () => ({
-	calculateContextTokens: (usage: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-		totalTokens?: number;
-	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+	calculateContextTokens: calculateMockContextTokens,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
 	compact: async () => ({
 		summary: "compacted",
@@ -27,27 +168,11 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		tokensBefore: 100,
 		details: {},
 	}),
-	estimateContextTokens: (
-		messages: Array<{
-			role: string;
-			usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens?: number };
-			stopReason?: string;
-		}>,
-	) => {
-		// Walk backwards to find last non-error, non-aborted assistant with usage
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "assistant" && msg.stopReason !== "error" && msg.stopReason !== "aborted" && msg.usage) {
-				const tokens =
-					msg.usage.totalTokens ?? msg.usage.input + msg.usage.output + msg.usage.cacheRead + msg.usage.cacheWrite;
-				return { tokens, usageTokens: tokens, trailingTokens: 0, lastUsageIndex: i };
-			}
-		}
-		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
-	},
-	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	prepareCompaction: () => ({ dummy: true }),
+	estimateContextTokens: estimateMockContextTokens,
 	estimateSystemOverhead: () => 0,
+	estimateTokens: estimateMockTokens,
+	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
+	prepareCompaction: () => createMockCompactionPreparation(),
 	effectiveKeepRecentTokens: (
 		_contextWindow: number,
 		_fixedOverhead: number,
@@ -194,7 +319,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		const prepareCompactionSpy = vi
 			.spyOn(compactionModule, "prepareCompaction")
-			.mockReturnValue({ dummy: true } as any);
+			.mockReturnValue(createMockCompactionPreparation(retryUserId));
 		vi.spyOn(compactionModule, "compact").mockResolvedValue({
 			summary: "compacted",
 			firstKeptEntryId: retryUserId,
@@ -219,6 +344,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 				allowAssistantCutPoints: false,
 			},
 			expect.any(Number),
+			expect.any(Number),
 		);
 
 		const rebuiltContext = sessionManager.buildSessionContext();
@@ -229,6 +355,211 @@ describe("AgentSession auto-compaction queue resume", () => {
 			),
 		).toBe(false);
 		expect(continueSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("should continue overflow recovery after compaction when kept assistant usage is stale", async () => {
+		const model = session.model!;
+		const retryLimit = model.contextWindow - session.settingsManager.getCompactionSettings().reserveTokens;
+		const baseTimestamp = Date.now();
+
+		const firstUser = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "old prompt" }],
+			timestamp: baseTimestamp,
+		};
+		const staleAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "small kept reply" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 600_000,
+				output: 10_000,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 610_000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: baseTimestamp + 1,
+		};
+		const retryUser = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "retry me after compaction" }],
+			timestamp: baseTimestamp + 2,
+		};
+		const overflowAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+			timestamp: baseTimestamp + 3,
+		};
+
+		const firstUserId = sessionManager.appendMessage(firstUser);
+		sessionManager.appendMessage(staleAssistant);
+		sessionManager.appendMessage(retryUser);
+		sessionManager.appendMessage(overflowAssistant);
+
+		session.agent.replaceMessages([firstUser, staleAssistant, retryUser, overflowAssistant]);
+
+		const postCompactionMessageTokens =
+			estimateMockTokens({ role: "compactionSummary", summary: "compacted" }) +
+			estimateMockTokens(firstUser) +
+			estimateMockTokens(staleAssistant) +
+			estimateMockTokens(retryUser);
+		const fixedOverhead = retryLimit - postCompactionMessageTokens;
+
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: firstUserId,
+			tokensBefore: 100,
+			details: {},
+		});
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const compactionEvents: Array<{ willRetry: boolean; errorMessage?: string; result?: unknown }> = [];
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEvents.push({
+					willRetry: event.willRetry,
+					errorMessage: event.errorMessage,
+					result: event.result,
+				});
+			}
+		});
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (
+					reason: "overflow" | "threshold",
+					willRetry: boolean,
+					fixedOverhead?: number,
+				) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		expect(fixedOverhead).toBeGreaterThan(0);
+
+		await runAutoCompaction("overflow", true, fixedOverhead);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(compactionEvents.some((event) => event.errorMessage?.includes("post-compaction context") ?? false)).toBe(
+			false,
+		);
+		expect(compactionEvents).toContainEqual(
+			expect.objectContaining({
+				willRetry: true,
+				result: expect.objectContaining({
+					summary: "compacted",
+					firstKeptEntryId: firstUserId,
+				}),
+			}),
+		);
+		expect(continueSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("should block overflow retry when a kept user image still exceeds the model window", async () => {
+		const model = session.model!;
+		const retryLimit = model.contextWindow - session.settingsManager.getCompactionSettings().reserveTokens;
+		const baseTimestamp = Date.now();
+		const retainedImage = {
+			type: "image",
+			data: "ZmFrZS1pbWFnZS1ieXRlcw==",
+			mimeType: "image/png",
+		} satisfies ImageContent;
+		const imageUser = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "use this screenshot" }, retainedImage],
+			timestamp: baseTimestamp,
+		};
+		const textOnlyImageUser = {
+			...imageUser,
+			content: imageUser.content.filter((block) => block.type === "text"),
+		};
+		const retryUser = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "retry me after compaction" }],
+			timestamp: baseTimestamp + 1,
+		};
+		const overflowAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+			timestamp: baseTimestamp + 2,
+		};
+
+		const imageUserId = sessionManager.appendMessage(imageUser);
+		sessionManager.appendMessage(retryUser);
+		sessionManager.appendMessage(overflowAssistant);
+
+		session.agent.replaceMessages([imageUser, retryUser, overflowAssistant]);
+
+		const textOnlyPostCompactionTokens =
+			estimateMockTokens({ role: "compactionSummary", summary: "compacted" }) +
+			estimateMockTokens(textOnlyImageUser) +
+			estimateMockTokens(retryUser);
+		const fixedOverhead = retryLimit - textOnlyPostCompactionTokens;
+
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: imageUserId,
+			tokensBefore: 100,
+			details: {},
+		});
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const compactionEvents: Array<{ willRetry: boolean; errorMessage?: string }> = [];
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEvents.push({ willRetry: event.willRetry, errorMessage: event.errorMessage });
+			}
+		});
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (
+					reason: "overflow" | "threshold",
+					willRetry: boolean,
+					fixedOverhead?: number,
+				) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		expect(fixedOverhead).toBeGreaterThan(0);
+
+		await runAutoCompaction("overflow", true, fixedOverhead);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(compactionEvents).toContainEqual(
+			expect.objectContaining({
+				willRetry: false,
+				errorMessage: expect.stringContaining("post-compaction context"),
+			}),
+		);
+		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
 	it("should drop trailing assistant messages while preserving a tool-result retry tail", () => {

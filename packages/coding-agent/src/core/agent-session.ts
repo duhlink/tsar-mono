@@ -30,6 +30,7 @@ import {
 	compact,
 	estimateContextTokens,
 	estimateSystemOverhead,
+	estimateTokens,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -2008,10 +2009,14 @@ export class AgentSession {
 
 			// Post-compaction size verification for overflow retries
 			// If compacted context still exceeds window, the retry will also overflow.
-			// Signal this clearly rather than wasting an API call.
+			// Kept assistant messages may still carry stale pre-compaction usage, so this
+			// branch must not trust estimateContextTokens().
 			if (willRetry && this.model) {
-				const postCompactionEstimate = estimateContextTokens(this.agent.state.messages);
-				const postCompactionTotal = postCompactionEstimate.tokens + fixedOverhead;
+				const postCompactionMessageTokens = this.agent.state.messages.reduce(
+					(total, message) => total + estimateTokens(message),
+					0,
+				);
+				const postCompactionTotal = postCompactionMessageTokens + fixedOverhead;
 				if (postCompactionTotal > this.model.contextWindow - settings.reserveTokens) {
 					this._emit({
 						type: "compaction_end",

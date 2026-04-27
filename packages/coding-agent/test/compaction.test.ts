@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@tsar/agent-core";
-import type { AssistantMessage, Usage } from "@tsar/ai";
+import type { AssistantMessage, ImageContent, Usage } from "@tsar/ai";
 import { getModel } from "@tsar/ai";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -185,6 +185,49 @@ describe("Token calculation", () => {
 	it("should handle zero values", () => {
 		const usage = createMockUsage(0, 0, 0, 0);
 		expect(calculateContextTokens(usage)).toBe(0);
+	});
+
+	it("should conservatively count retained user image blocks in compacted retry contexts", () => {
+		const retainedImage = {
+			type: "image",
+			data: "ZmFrZS1pbWFnZS1ieXRlcw==",
+			mimeType: "image/png",
+		} satisfies ImageContent;
+		const compactedSummary = {
+			role: "compactionSummary",
+			summary: "Older turns were compacted.",
+			tokensBefore: 100,
+			timestamp: Date.now() - 2,
+		} satisfies AgentMessage;
+		const textOnlyRetainedUser = {
+			role: "user",
+			content: [{ type: "text", text: "use this screenshot" }],
+			timestamp: Date.now() - 1,
+		} satisfies AgentMessage;
+		const imageRetainedUser = {
+			...textOnlyRetainedUser,
+			content: [...textOnlyRetainedUser.content, retainedImage],
+		} satisfies AgentMessage;
+		const retryUser = {
+			role: "user",
+			content: [{ type: "text", text: "retry me after compaction" }],
+			timestamp: Date.now(),
+		} satisfies AgentMessage;
+
+		const imageMessages = [compactedSummary, imageRetainedUser, retryUser];
+		const textOnlyMessages = [compactedSummary, textOnlyRetainedUser, retryUser];
+		const textOnlyEstimate = textOnlyMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		const imageEstimate = imageMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		const imageContextEstimate = estimateContextTokens(imageMessages);
+
+		expect(estimateTokens(imageRetainedUser) - estimateTokens(textOnlyRetainedUser)).toBe(1200);
+		expect(imageEstimate).toBe(textOnlyEstimate + 1200);
+		expect(imageContextEstimate).toMatchObject({
+			tokens: imageEstimate,
+			usageTokens: 0,
+			trailingTokens: imageEstimate,
+			lastUsageIndex: null,
+		});
 	});
 });
 
