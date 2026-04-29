@@ -31,12 +31,18 @@ function couldBeEmoji(segment: string): boolean {
 // Regexes for character classification (same as string-width library)
 // Use RegExp constructors instead of /v literals so TypeScript can parse this file
 // under the repo's ES2022 target while preserving runtime Unicode-set behavior.
-const zeroWidthRegex = new RegExp(String.raw`^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$`, "v");
+// Keep the flag typed as a general string so Biome does not rewrite these back
+// into /v literals, which would reintroduce TS1501 under the ES2022 target.
+const unicodeSetFlag: string = "v";
+const zeroWidthRegex = new RegExp(
+	String.raw`^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$`,
+	unicodeSetFlag,
+);
 const leadingNonPrintingRegex = new RegExp(
 	String.raw`^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+`,
-	"v",
+	unicodeSetFlag,
 );
-const rgiEmojiRegex = new RegExp(String.raw`^\p{RGI_Emoji}$`, "v");
+const rgiEmojiRegex = new RegExp(String.raw`^\p{RGI_Emoji}$`, unicodeSetFlag);
 
 // Cache for non-ASCII strings
 const WIDTH_CACHE_SIZE = 512;
