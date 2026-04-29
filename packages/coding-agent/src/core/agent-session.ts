@@ -1013,8 +1013,13 @@ export class AgentSession {
 			}
 		}
 
-		await this.agent.prompt(messages);
+		await this._runAgentPrompt(messages);
+	}
+
+	private async _runAgentPrompt(message: AgentMessage | AgentMessage[]): Promise<void> {
+		await this.agent.prompt(message);
 		await this.waitForRetry();
+		await this._waitForQueuedAgentEvents();
 	}
 
 	/**
@@ -1202,7 +1207,7 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
-			await this.agent.prompt(appMessage);
+			await this._runAgentPrompt(appMessage);
 		} else {
 			this.agent.appendMessage(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
@@ -2679,6 +2684,13 @@ export class AgentSession {
 		if (this._retryPromise) {
 			await this._retryPromise;
 		}
+	}
+
+	private async _waitForQueuedAgentEvents(): Promise<void> {
+		await this._agentEventQueue.then(
+			() => undefined,
+			() => undefined,
+		);
 	}
 
 	/** Whether auto-retry is currently in progress */

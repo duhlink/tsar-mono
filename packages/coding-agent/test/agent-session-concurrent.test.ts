@@ -474,8 +474,6 @@ describe("AgentSession concurrent prompt guard", () => {
 		};
 
 		await session.prompt("hi");
-		await session.agent.waitForIdle();
-		await new Promise((resolve) => setTimeout(resolve, 100));
 
 		const messageEntries = sessionManager.getEntries().filter((entry) => entry.type === "message");
 		expect(messageEntries.map((entry) => entry.message.role)).toEqual([
