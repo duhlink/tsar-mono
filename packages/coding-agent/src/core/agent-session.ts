@@ -251,6 +251,8 @@ export class AgentSession {
 	private _retryAttempt = 0;
 	private _retryPromise: Promise<void> | undefined = undefined;
 	private _retryResolve: (() => void) | undefined = undefined;
+	private _scheduledContinuePromise: Promise<void> | undefined = undefined;
+	private _scheduledContinueResolve: (() => void) | undefined = undefined;
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -929,8 +931,8 @@ export class AgentSession {
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
 
-		// If streaming, queue via steer() or followUp() based on option
-		if (this.isStreaming) {
+		// If streaming (or about to resume from an auto-continue), queue via steer() or followUp().
+		if (this.isStreaming || this._scheduledContinuePromise) {
 			if (!options?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -1020,6 +1022,7 @@ export class AgentSession {
 		await this.agent.prompt(message);
 		await this.waitForRetry();
 		await this._waitForQueuedAgentEvents();
+		await this._waitForScheduledContinue();
 	}
 
 	/**
@@ -2008,32 +2011,12 @@ export class AgentSession {
 			const messagesBeforeAutoCompact = this.agent.state.messages.length;
 			this.agent.replaceMessages(sessionContext.messages);
 
-			this._compactionCount++;
-			const autoTokensAfterEstimate = estimateContextTokens(this.agent.state.messages);
-			const autoMessagesRemoved = messagesBeforeAutoCompact - this.agent.state.messages.length;
-
-			// Post-compaction size verification for overflow retries
-			// If compacted context still exceeds window, the retry will also overflow.
-			// Kept assistant messages may still carry stale pre-compaction usage, so this
-			// branch must not trust estimateContextTokens().
-			if (willRetry && this.model) {
-				const postCompactionMessageTokens = this.agent.state.messages.reduce(
-					(total, message) => total + estimateTokens(message),
-					0,
-				);
-				const postCompactionTotal = postCompactionMessageTokens + fixedOverhead;
-				if (postCompactionTotal > this.model.contextWindow - settings.reserveTokens) {
-					this._emit({
-						type: "compaction_end",
-						reason,
-						result: undefined,
-						aborted: false,
-						willRetry: false,
-						errorMessage: `Context overflow recovery failed: post-compaction context (${postCompactionTotal} estimated tokens) still exceeds model window (${this.model.contextWindow} tokens). Fixed overhead: ${fixedOverhead} tokens. Try reducing context or switching to a larger-context model.`,
-					});
-					return;
-				}
-			}
+			const result: CompactionResult = {
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+			};
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -2049,6 +2032,10 @@ export class AgentSession {
 				extensionAutoContinue = compactResult?.autoContinue === true;
 			}
 
+			this._compactionCount++;
+			const autoTokensAfterEstimate = estimateContextTokens(this.agent.state.messages);
+			const autoMessagesRemoved = messagesBeforeAutoCompact - this.agent.state.messages.length;
+
 			if (this._extensionRunner) {
 				await this._extensionRunner.emit({
 					type: "session_after_compact",
@@ -2059,11 +2046,33 @@ export class AgentSession {
 				});
 			}
 
+			// Post-compaction size verification for overflow retries.
+			// The compaction has already mutated session state and fired post-compaction
+			// hooks, so failure here must still surface the compaction result.
+			if (willRetry && this.model) {
+				const postCompactionMessageTokens = this.agent.state.messages.reduce(
+					(total, message) => total + estimateTokens(message),
+					0,
+				);
+				const postCompactionTotal = postCompactionMessageTokens + fixedOverhead;
+				if (postCompactionTotal > this.model.contextWindow - settings.reserveTokens) {
+					this._emit({
+						type: "compaction_end",
+						reason,
+						result,
+						aborted: false,
+						willRetry: false,
+						errorMessage: `Context overflow recovery failed: post-compaction context (${postCompactionTotal} estimated tokens) still exceeds model window (${this.model.contextWindow} tokens). Fixed overhead: ${fixedOverhead} tokens. Try reducing context or switching to a larger-context model.`,
+					});
+					return;
+				}
+			}
+
 			if (willRetry && !this._normalizePostCompactionRetryMessages()) {
 				this._emit({
 					type: "compaction_end",
 					reason,
-					result: undefined,
+					result,
 					aborted: false,
 					willRetry: false,
 					errorMessage:
@@ -2072,31 +2081,22 @@ export class AgentSession {
 				return;
 			}
 
-			const result: CompactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
-				setTimeout(async () => {
-					await this._fireBeforeAgentStartForContinue();
-					this.agent.continue().catch((err) => {
-						console.error("[AgentSession] Post-compaction retry failed:", err?.message || err);
-					});
-				}, 100);
+				this._scheduleAgentContinue(100, (err) => {
+					console.error("[AgentSession] Post-compaction retry failed:", err instanceof Error ? err.message : err);
+				});
 			} else if (this.agent.hasQueuedMessages() || extensionAutoContinue) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
 				// Also continue if extension requested auto-continue (d_20260417_030).
-				setTimeout(async () => {
-					await this._fireBeforeAgentStartForContinue();
-					this.agent.continue().catch((err) => {
-						console.error("[AgentSession] Post-compaction continue failed:", err?.message || err);
-					});
-				}, 100);
+				this._scheduleAgentContinue(100, (err) => {
+					console.error(
+						"[AgentSession] Post-compaction continue failed:",
+						err instanceof Error ? err.message : err,
+					);
+				});
 			}
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
@@ -2656,13 +2656,10 @@ export class AgentSession {
 		}
 		this._retryAbortController = undefined;
 
-		// Retry via continue() - use setTimeout to break out of event handler chain
-		setTimeout(async () => {
-			await this._fireBeforeAgentStartForContinue();
-			this.agent.continue().catch(() => {
-				// Retry failed - will be caught by next agent_end
-			});
-		}, 0);
+		// Retry via continue() - keep prompt() blocked until the scheduled resume actually starts.
+		this._scheduleAgentContinue(0, () => {
+			// Retry failed - will be caught by next agent_end
+		});
 
 		return true;
 	}
@@ -2683,6 +2680,31 @@ export class AgentSession {
 	private async waitForRetry(): Promise<void> {
 		if (this._retryPromise) {
 			await this._retryPromise;
+		}
+	}
+
+	private _scheduleAgentContinue(delayMs: number, onError: (error: unknown) => void): void {
+		if (!this._scheduledContinuePromise) {
+			this._scheduledContinuePromise = new Promise((resolve) => {
+				this._scheduledContinueResolve = resolve;
+			});
+		}
+
+		setTimeout(async () => {
+			try {
+				await this._fireBeforeAgentStartForContinue();
+				this.agent.continue().catch(onError);
+			} finally {
+				this._scheduledContinueResolve?.();
+				this._scheduledContinueResolve = undefined;
+				this._scheduledContinuePromise = undefined;
+			}
+		}, delayMs);
+	}
+
+	private async _waitForScheduledContinue(): Promise<void> {
+		if (this._scheduledContinuePromise) {
+			await this._scheduledContinuePromise;
 		}
 	}
 

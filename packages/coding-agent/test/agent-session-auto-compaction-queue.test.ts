@@ -2,7 +2,14 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@tsar/agent-core";
-import { type AssistantMessage, getModel, type ImageContent, type ToolResultMessage } from "@tsar/ai";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	getModel,
+	type ImageContent,
+	type ToolResultMessage,
+} from "@tsar/ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -157,6 +164,19 @@ function createMockCompactionPreparation(firstKeptEntryId = "entry-1"): Compacti
 			keepRecentTokens: 20000,
 		},
 	};
+}
+
+class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+	constructor() {
+		super(
+			(event) => event.type === "done" || event.type === "error",
+			(event) => {
+				if (event.type === "done") return event.message;
+				if (event.type === "error") return event.error;
+				throw new Error("Unexpected event type");
+			},
+		);
+	}
 }
 
 vi.mock("../src/core/compaction/index.js", () => ({
@@ -470,7 +490,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("should block overflow retry when a kept user image still exceeds the model window", async () => {
+	it("should emit post-compaction events before blocking an overflow retry that still does not fit", async () => {
 		const model = session.model!;
 		const retryLimit = model.contextWindow - session.settingsManager.getCompactionSettings().reserveTokens;
 		const baseTimestamp = Date.now();
@@ -531,10 +551,52 @@ describe("AgentSession auto-compaction queue resume", () => {
 			details: {},
 		});
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-		const compactionEvents: Array<{ willRetry: boolean; errorMessage?: string }> = [];
+		const eventOrder: string[] = [];
+		const afterCompactEvents: Array<{ compactionCount?: number; tokensBefore?: number; tokensAfter?: number }> = [];
+		const sessionWithRunner = session as unknown as {
+			_extensionRunner?: {
+				hasHandlers: (eventType: string) => boolean;
+				emit: (event: {
+					type: string;
+					tokensBefore?: number;
+					tokensAfter?: number;
+					compactionCount?: number;
+					compactionEntry?: { summary: string; firstKeptEntryId: string };
+				}) => Promise<{ autoContinue?: boolean } | undefined>;
+			};
+		};
+		sessionWithRunner._extensionRunner = {
+			hasHandlers: () => false,
+			emit: async (event) => {
+				eventOrder.push(event.type);
+				if (event.type === "session_after_compact") {
+					afterCompactEvents.push({
+						compactionCount: event.compactionCount,
+						tokensBefore: event.tokensBefore,
+						tokensAfter: event.tokensAfter,
+					});
+				}
+				return undefined;
+			},
+		};
+		const compactionEvents: Array<{
+			willRetry: boolean;
+			errorMessage?: string;
+			result?: { summary: string; firstKeptEntryId: string };
+		}> = [];
 		session.subscribe((event) => {
 			if (event.type === "compaction_end") {
-				compactionEvents.push({ willRetry: event.willRetry, errorMessage: event.errorMessage });
+				eventOrder.push(event.type);
+				compactionEvents.push({
+					willRetry: event.willRetry,
+					errorMessage: event.errorMessage,
+					result: event.result
+						? {
+								summary: event.result.summary,
+								firstKeptEntryId: event.result.firstKeptEntryId,
+							}
+						: undefined,
+				});
 			}
 		});
 
@@ -553,13 +615,163 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await runAutoCompaction("overflow", true, fixedOverhead);
 		await vi.advanceTimersByTimeAsync(100);
 
+		expect(eventOrder).toEqual(["session_compact", "session_after_compact", "compaction_end"]);
+		expect(afterCompactEvents).toContainEqual(
+			expect.objectContaining({
+				compactionCount: 1,
+				tokensBefore: 100,
+				tokensAfter: expect.any(Number),
+			}),
+		);
 		expect(compactionEvents).toContainEqual(
 			expect.objectContaining({
 				willRetry: false,
 				errorMessage: expect.stringContaining("post-compaction context"),
+				result: expect.objectContaining({
+					summary: "compacted",
+					firstKeptEntryId: imageUserId,
+				}),
 			}),
 		);
 		expect(continueSpy).not.toHaveBeenCalled();
+	});
+
+	it("should keep prompt() busy until overflow recovery continue starts", async () => {
+		session.dispose();
+
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		let callCount = 0;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: () => {
+				callCount++;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					if (callCount === 1) {
+						const message: AssistantMessage = {
+							role: "assistant",
+							content: [{ type: "text", text: "" }],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "error",
+							errorMessage: "prompt is too long",
+							timestamp: Date.now(),
+						};
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "error", reason: "error", error: message });
+						return;
+					}
+
+					const message: AssistantMessage = {
+						role: "assistant",
+						content: [{ type: "text", text: "Recovered after compaction" }],
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					};
+					stream.push({ type: "start", partial: { ...message, content: [] } });
+					stream.push({ type: "done", reason: "stop", message });
+				});
+				return stream;
+			},
+		});
+
+		sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const overflowCompactionFinished = new Promise<void>((resolve) => {
+			session.subscribe((event) => {
+				if (event.type === "compaction_end" && event.reason === "overflow") {
+					resolve();
+				}
+			});
+		});
+
+		let firstPromptResolved = false;
+		const firstPrompt = session.prompt("first prompt").then(() => {
+			firstPromptResolved = true;
+		});
+
+		await overflowCompactionFinished;
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(firstPromptResolved).toBe(false);
+		await expect(session.prompt("second prompt")).rejects.toThrow(
+			"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+		);
+
+		await vi.advanceTimersByTimeAsync(100);
+		await session.agent.waitForIdle();
+		const waitForQueuedAgentEvents = (
+			session as unknown as {
+				_waitForQueuedAgentEvents: () => Promise<void>;
+			}
+		)._waitForQueuedAgentEvents.bind(session);
+		await waitForQueuedAgentEvents();
+		await firstPrompt;
+
+		expect(callCount).toBe(2);
+		const persistedUserMessages = sessionManager.getEntries().flatMap((entry) => {
+			if (entry.type !== "message" || entry.message.role !== "user") {
+				return [];
+			}
+
+			return [entry.message];
+		});
+		expect(persistedUserMessages).toHaveLength(1);
+		expect(
+			persistedUserMessages.map((message) =>
+				typeof message.content === "string"
+					? message.content
+					: message.content
+							.filter((block): block is { type: "text"; text: string } => block.type === "text")
+							.map((block) => block.text)
+							.join(""),
+			),
+		).toEqual(["first prompt"]);
+		expect(session.messages.some((message) => message.role === "compactionSummary")).toBe(true);
+		const assistantMessages = session.messages.filter(
+			(message): message is AssistantMessage => message.role === "assistant",
+		);
+		expect(assistantMessages[assistantMessages.length - 1]?.content).toEqual([
+			{ type: "text", text: "Recovered after compaction" },
+		]);
 	});
 
 	it("should drop trailing assistant messages while preserving a tool-result retry tail", () => {
