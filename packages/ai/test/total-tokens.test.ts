@@ -22,6 +22,7 @@ type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
 import { hasAzureOpenAICredentials, resolveAzureDeploymentName } from "./azure-utils.js";
 import { hasBedrockCredentials } from "./bedrock-utils.js";
 import { resolveApiKey } from "./oauth.js";
+import { isZaiProviderDriftError, logZaiProviderDrift, throwIfZaiRateLimited } from "./zai-provider-drift.js";
 
 // Resolve OAuth tokens at module level (async, runs before tests)
 const oauthTokens = await Promise.all([
@@ -63,6 +64,7 @@ async function testTotalTokensWithCache<TApi extends Api>(
 	};
 
 	const response1 = await complete(llm, context1, options);
+	throwIfZaiRateLimited("the totalTokens cache probe first request", response1);
 	expect(response1.stopReason).toBe("stop");
 
 	// Second request - should trigger cache read (same system prompt, add conversation)
@@ -80,6 +82,7 @@ async function testTotalTokensWithCache<TApi extends Api>(
 	};
 
 	const response2 = await complete(llm, context2, options);
+	throwIfZaiRateLimited("the totalTokens cache probe second request", response2);
 	expect(response2.stopReason).toBe("stop");
 
 	return { first: response1.usage, second: response2.usage };
@@ -337,13 +340,23 @@ describe("totalTokens field", () => {
 				const llm = getModel("zai", "glm-4.5-flash");
 
 				console.log(`\nz.ai / ${llm.id}:`);
-				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.ZAI_API_KEY });
 
-				logUsage("First request", first);
-				logUsage("Second request", second);
+				try {
+					const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.ZAI_API_KEY });
 
-				assertTotalTokensEqualsComponents(first);
-				assertTotalTokensEqualsComponents(second);
+					logUsage("First request", first);
+					logUsage("Second request", second);
+
+					assertTotalTokensEqualsComponents(first);
+					assertTotalTokensEqualsComponents(second);
+				} catch (error) {
+					if (isZaiProviderDriftError(error)) {
+						logZaiProviderDrift(error);
+						return;
+					}
+
+					throw error;
+				}
 			},
 		);
 	});
