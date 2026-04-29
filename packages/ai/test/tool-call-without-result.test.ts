@@ -180,7 +180,9 @@ describe("Tool Call Without Result Tests", () => {
 		const model = getModel("zai", "glm-4.5-flash");
 
 		it("should filter out tool calls without corresponding tool results", { retry: 3, timeout: 30000 }, async () => {
-			await testToolCallWithoutResult(model);
+			// zAI's auto tool routing is not deterministic enough for this regression path;
+			// require a tool call so the orphaned-tool-result filter is always exercised.
+			await testToolCallWithoutResult(model, { toolChoice: "required" });
 		});
 	});
 

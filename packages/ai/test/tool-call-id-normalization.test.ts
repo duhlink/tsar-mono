@@ -13,6 +13,7 @@
 import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
 import { getModel } from "../src/models.js";
+import { convertResponsesMessages } from "../src/providers/openai-responses-shared.js";
 import { completeSimple, getEnvApiKey } from "../src/stream.js";
 import type { AssistantMessage, Message, Tool, ToolResultMessage } from "../src/types.js";
 import { resolveApiKey } from "./oauth.js";
@@ -21,6 +22,8 @@ import { resolveApiKey } from "./oauth.js";
 const copilotToken = await resolveApiKey("github-copilot");
 const openrouterKey = getEnvApiKey("openrouter");
 const codexToken = await resolveApiKey("openai-codex");
+
+const OPENAI_RESPONSES_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 
 // Simple echo tool for testing
 const echoToolSchema = Type.Object({
@@ -263,29 +266,47 @@ describe("Tool Call ID Normalization - Prefilled Context", () => {
 		30000,
 	);
 
-	it.skipIf(!codexToken)(
-		"openai-codex should handle prefilled context with long pipe-separated IDs",
-		async () => {
-			const model = getModel("openai-codex", "gpt-5.2-codex");
-			const messages = buildPrefilledMessages();
+	it("openai-codex should normalize prefilled context with long pipe-separated IDs", () => {
+		const model = getModel("openai-codex", "gpt-5.2-codex");
+		const messages = buildPrefilledMessages();
 
-			const response = await completeSimple(
-				model,
-				{
-					systemPrompt: "You are a helpful assistant.",
-					messages,
-					tools: [echoTool],
-				},
-				{ apiKey: codexToken },
-			);
+		// Keep exact gpt-5.2-codex compatibility coverage per d_20260409_021,
+		// but avoid the stale live call path now rejected for ChatGPT-account Codex tokens.
+		const payload = convertResponsesMessages(
+			model,
+			{
+				systemPrompt: "You are a helpful assistant.",
+				messages,
+				tools: [echoTool],
+			},
+			OPENAI_RESPONSES_TOOL_CALL_PROVIDERS,
+			{ includeSystemPrompt: false },
+		);
 
-			// Should NOT fail with ID validation error
-			expect(response.stopReason, `Codex error: ${response.errorMessage}`).not.toBe("error");
-			if (response.errorMessage) {
-				expect(response.errorMessage).not.toContain("id");
-				expect(response.errorMessage).not.toContain("additional characters");
-			}
-		},
-		30000,
-	);
+		const functionCall = payload.find((item) => item.type === "function_call");
+		expect(functionCall).toBeDefined();
+		if (!functionCall || functionCall.type !== "function_call") {
+			throw new Error("Expected a normalized function_call item in the OpenAI Responses payload");
+		}
+
+		expect(functionCall.call_id).toBe("call_pAYbIr76hXIjncD9UE4eGfnS");
+		expect(functionCall.id).toBeDefined();
+		if (!functionCall.id) {
+			throw new Error("Expected the normalized function_call item to keep an item id");
+		}
+		expect(functionCall.id).toMatch(/^fc_[a-z0-9]+$/);
+		expect(functionCall.id).not.toContain("|");
+		expect(functionCall.id).not.toContain("+");
+		expect(functionCall.id).not.toContain("/");
+		expect(functionCall.id).not.toContain("=");
+		expect(functionCall.id.length).toBeLessThanOrEqual(64);
+
+		const functionCallOutput = payload.find((item) => item.type === "function_call_output");
+		expect(functionCallOutput).toBeDefined();
+		if (!functionCallOutput || functionCallOutput.type !== "function_call_output") {
+			throw new Error("Expected a function_call_output item for the normalized tool result");
+		}
+
+		expect(functionCallOutput.call_id).toBe(functionCall.call_id);
+	});
 });
