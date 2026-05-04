@@ -13,6 +13,7 @@ import { selectConfig } from "./cli/config-selector.js";
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
+import { handleModelsCommand, type RuntimeProviderRegistration } from "./cli/models-command.js";
 import { selectSession } from "./cli/session-picker.js";
 import { APP_NAME, getAgentDir, getModelsPath, VERSION } from "./config.js";
 import { AuthStorage } from "./core/auth-storage.js";
@@ -654,7 +655,8 @@ export async function main(args: string[]) {
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	reportSettingsErrors(settingsManager, "startup");
 	const authStorage = AuthStorage.create();
-	const modelRegistry = new ModelRegistry(authStorage, getModelsPath());
+	const modelsJsonPath = getModelsPath();
+	const modelRegistry = new ModelRegistry(authStorage, modelsJsonPath);
 
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -682,9 +684,11 @@ export async function main(args: string[]) {
 
 	// Apply pending provider registrations from extensions immediately
 	// so they're available for model resolution before AgentSession is created
+	const runtimeProviderRegistrations: RuntimeProviderRegistration[] = [];
 	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
 			modelRegistry.registerProvider(name, config);
+			runtimeProviderRegistrations.push({ name, config });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(chalk.red(`Extension "${extensionPath}" error: ${message}`));
@@ -706,6 +710,16 @@ export async function main(args: string[]) {
 	// Pass flag values to extensions via runtime
 	for (const [name, value] of parsed.unknownFlags) {
 		extensionsResult.runtime.flagValues.set(name, value);
+	}
+
+	if (
+		await handleModelsCommand(args, {
+			authStorage,
+			modelsJsonPath,
+			runtimeProviderRegistrations,
+		})
+	) {
+		return;
 	}
 
 	if (parsed.version) {
