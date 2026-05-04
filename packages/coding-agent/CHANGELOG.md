@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `tsar models validate` and `tsar models sync --normalize` to validate `models.json` and deterministically normalize local-registry-authoritative overlay data without fetching provider catalogs by default.
 - Added `ctx.signal` to `ExtensionContext` and wired it to the active agent turn so extension handlers can forward cancellation into nested model calls, `fetch()`, and other abort-aware work ([#2660](https://github.com/badlogic/pi-mono/issues/2660))
 - Exported public CLI model-resolution helpers from `@tsar/coding-agent` so downstream callers can resolve provider-qualified model refs through the shared registry/matching pipeline instead of duplicating `main.ts` / `model-resolver.ts` logic.
 

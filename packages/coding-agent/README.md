@@ -115,7 +115,7 @@ For each built-in provider, tsar maintains a list of tool-capable models, update
 
 See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
-**Custom providers & models:** Add providers via `~/.tsar/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
+**Custom providers & models:** Add providers via `~/.tsar/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google). Use `tsar models validate` to check the overlay against tsar's local registry and auth/header resolution, or `tsar models sync --normalize` to deterministically rewrite local-registry-authoritative fields without fetching provider catalogs by default. For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
 
 ---
 
@@ -453,6 +453,15 @@ tsar update [source]           # Update packages (skips pinned)
 tsar list                      # List installed packages
 tsar config                    # Enable/disable package resources
 ```
+
+### Models Config Commands
+
+```bash
+tsar models validate           # Validate ~/.tsar/agent/models.json against the local registry
+tsar models sync --normalize   # Deterministically normalize local-registry-authoritative overlay data
+```
+
+These commands operate on the `models.json` overlay described in [docs/models.md](docs/models.md). `sync --normalize` does not fetch provider catalogs by default.
 
 ### Modes
 

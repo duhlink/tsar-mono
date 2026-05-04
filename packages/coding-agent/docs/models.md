@@ -1,11 +1,12 @@
 # Custom Models
 
-Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.tsar/agent/models.json`.
+Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.tsar/agent/models.json`. `models.json` is an overlay on top of tsar's local registry, not a second canonical model catalog.
 
 ## Table of Contents
 
 - [Minimal Example](#minimal-example)
 - [Full Example](#full-example)
+- [Validate and Normalize](#validate-and-normalize)
 - [Supported APIs](#supported-apis)
 - [Provider Configuration](#provider-configuration)
 - [Model Configuration](#model-configuration)
@@ -89,6 +90,47 @@ Override defaults when you need specific values:
 ```
 
 The file reloads each time you open `/model`. Edit during session; no restart needed.
+
+## Validate and Normalize
+
+`models.json` is validated and normalized against the same local registry tsar already uses for `/model` and `--list-models`: built-in providers/models plus any runtime-registered providers from extensions. That makes `models.json` an overlay on top of local authoritative data, not a separate source of truth.
+
+### `tsar models validate`
+
+Use this to check whether your overlay is structurally and semantically valid without rewriting the file.
+
+```bash
+tsar models validate
+```
+
+Validation checks:
+- JSON/schema correctness plus `models.json` overlay semantics
+- overlay provider references that resolve against the local authoritative registry, plus authoritative built-in model IDs referenced by `modelOverrides`
+- duplicate providers or model entries after canonical name resolution
+- locally resolvable auth/header configuration (`apiKey`, `headers`, and `authHeader` requirements)
+
+Validation can still emit warnings. A common warning is that an explicit copy of an authoritative built-in model could be collapsed into overlay-only `modelOverrides`; run `tsar models sync --normalize` to rewrite that deterministically.
+
+### `tsar models sync --normalize`
+
+Use this when you want tsar to rewrite only the parts of `models.json` that the local registry can determine authoritatively.
+
+```bash
+tsar models sync --normalize
+```
+
+Normalization is deterministic and intended to be idempotent. It rewrites local-registry-authoritative data such as:
+- canonical provider/model IDs for authoritative entries
+- stable ordering of providers, models, overrides, headers, and compat objects
+- overlay fields that are redundant with the authoritative base model after provider-level config is applied
+- explicit copies of authoritative built-in models collapsed into `modelOverrides` when they are actually collapsible
+
+A built-in model copy is only collapsible when it can be represented as overlay-only data. If it needs its own per-model `api` or `baseUrl`, or otherwise cannot be expressed as an override on top of the authoritative base model, it stays as an explicit `models` entry.
+
+Normalization does **not**:
+- fetch live provider catalogs by default
+- discover or import raw upstream model lists
+- replace your custom non-authoritative models with remote metadata
 
 ## Supported APIs
 
