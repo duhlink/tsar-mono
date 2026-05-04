@@ -2,7 +2,6 @@
  * Model registry - manages built-in and custom models, provides API key resolution.
  */
 
-import { type Static, Type } from "@sinclair/typebox";
 import {
 	type Api,
 	type AssistantMessageEventStream,
@@ -12,153 +11,29 @@ import {
 	type KnownProvider,
 	type Model,
 	type OAuthProviderInterface,
-	type OpenAICompletionsCompat,
-	type OpenAIResponsesCompat,
 	registerApiProvider,
 	resetApiProviders,
 	type SimpleStreamOptions,
 } from "@tsar/ai";
 import { registerOAuthProvider, resetOAuthProviders } from "@tsar/ai/oauth";
-import AjvModule from "ajv";
-import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getAgentDir } from "../config.js";
 import type { AuthStorage } from "./auth-storage.js";
+import {
+	createEmptyLoadedModelsConfig,
+	getModelRequestKey,
+	loadModelsConfig,
+	mergeModelCompat,
+	type ModelOverride,
+	type ProviderOverride,
+	type ProviderRequestConfig,
+} from "./models-config.js";
 import {
 	clearConfigValueCache,
 	resolveConfigValueOrThrow,
 	resolveConfigValueUncached,
 	resolveHeadersOrThrow,
 } from "./resolve-config-value.js";
-
-const Ajv = (AjvModule as any).default || AjvModule;
-const ajv = new Ajv();
-
-// Schema for OpenRouter routing preferences
-const OpenRouterRoutingSchema = Type.Object({
-	only: Type.Optional(Type.Array(Type.String())),
-	order: Type.Optional(Type.Array(Type.String())),
-});
-
-// Schema for Vercel AI Gateway routing preferences
-const VercelGatewayRoutingSchema = Type.Object({
-	only: Type.Optional(Type.Array(Type.String())),
-	order: Type.Optional(Type.Array(Type.String())),
-});
-
-// Schema for OpenAI compatibility settings
-const ReasoningEffortMapSchema = Type.Object({
-	minimal: Type.Optional(Type.String()),
-	low: Type.Optional(Type.String()),
-	medium: Type.Optional(Type.String()),
-	high: Type.Optional(Type.String()),
-	xhigh: Type.Optional(Type.String()),
-});
-
-const OpenAICompletionsCompatSchema = Type.Object({
-	supportsStore: Type.Optional(Type.Boolean()),
-	supportsDeveloperRole: Type.Optional(Type.Boolean()),
-	supportsReasoningEffort: Type.Optional(Type.Boolean()),
-	reasoningEffortMap: Type.Optional(ReasoningEffortMapSchema),
-	supportsUsageInStreaming: Type.Optional(Type.Boolean()),
-	maxTokensField: Type.Optional(Type.Union([Type.Literal("max_completion_tokens"), Type.Literal("max_tokens")])),
-	requiresToolResultName: Type.Optional(Type.Boolean()),
-	requiresAssistantAfterToolResult: Type.Optional(Type.Boolean()),
-	requiresThinkingAsText: Type.Optional(Type.Boolean()),
-	thinkingFormat: Type.Optional(
-		Type.Union([
-			Type.Literal("openai"),
-			Type.Literal("openrouter"),
-			Type.Literal("zai"),
-			Type.Literal("qwen"),
-			Type.Literal("qwen-chat-template"),
-		]),
-	),
-	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
-	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
-	supportsStrictMode: Type.Optional(Type.Boolean()),
-});
-
-const OpenAIResponsesCompatSchema = Type.Object({
-	// Reserved for future use
-});
-
-const OpenAICompatSchema = Type.Union([OpenAICompletionsCompatSchema, OpenAIResponsesCompatSchema]);
-
-// Schema for custom model definition
-// Most fields are optional with sensible defaults for local models (Ollama, LM Studio, etc.)
-const ModelDefinitionSchema = Type.Object({
-	id: Type.String({ minLength: 1 }),
-	name: Type.Optional(Type.String({ minLength: 1 })),
-	api: Type.Optional(Type.String({ minLength: 1 })),
-	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
-	reasoning: Type.Optional(Type.Boolean()),
-	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
-	cost: Type.Optional(
-		Type.Object({
-			input: Type.Number(),
-			output: Type.Number(),
-			cacheRead: Type.Number(),
-			cacheWrite: Type.Number(),
-		}),
-	),
-	contextWindow: Type.Optional(Type.Number()),
-	maxTokens: Type.Optional(Type.Number()),
-	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-	compat: Type.Optional(OpenAICompatSchema),
-});
-
-// Schema for per-model overrides (all fields optional, merged with built-in model)
-const ModelOverrideSchema = Type.Object({
-	name: Type.Optional(Type.String({ minLength: 1 })),
-	reasoning: Type.Optional(Type.Boolean()),
-	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
-	cost: Type.Optional(
-		Type.Object({
-			input: Type.Optional(Type.Number()),
-			output: Type.Optional(Type.Number()),
-			cacheRead: Type.Optional(Type.Number()),
-			cacheWrite: Type.Optional(Type.Number()),
-		}),
-	),
-	contextWindow: Type.Optional(Type.Number()),
-	maxTokens: Type.Optional(Type.Number()),
-	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-	compat: Type.Optional(OpenAICompatSchema),
-});
-
-type ModelOverride = Static<typeof ModelOverrideSchema>;
-
-const ProviderConfigSchema = Type.Object({
-	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
-	apiKey: Type.Optional(Type.String({ minLength: 1 })),
-	api: Type.Optional(Type.String({ minLength: 1 })),
-	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-	compat: Type.Optional(OpenAICompatSchema),
-	authHeader: Type.Optional(Type.Boolean()),
-	models: Type.Optional(Type.Array(ModelDefinitionSchema)),
-	modelOverrides: Type.Optional(Type.Record(Type.String(), ModelOverrideSchema)),
-});
-
-const ModelsConfigSchema = Type.Object({
-	providers: Type.Record(Type.String(), ProviderConfigSchema),
-});
-
-ajv.addSchema(ModelsConfigSchema, "ModelsConfig");
-
-type ModelsConfig = Static<typeof ModelsConfigSchema>;
-
-/** Provider override config (baseUrl, compat) without request auth/headers */
-interface ProviderOverride {
-	baseUrl?: string;
-	compat?: Model<Api>["compat"];
-}
-
-interface ProviderRequestConfig {
-	apiKey?: string;
-	headers?: Record<string, string>;
-	authHeader?: boolean;
-}
 
 export type ResolvedRequestAuth =
 	| {
@@ -170,51 +45,6 @@ export type ResolvedRequestAuth =
 			ok: false;
 			error: string;
 	  };
-
-/** Result of loading custom models from models.json */
-interface CustomModelsResult {
-	models: Model<Api>[];
-	/** Providers with baseUrl/headers/apiKey overrides for built-in models */
-	overrides: Map<string, ProviderOverride>;
-	/** Per-model overrides: provider -> modelId -> override */
-	modelOverrides: Map<string, Map<string, ModelOverride>>;
-	error: string | undefined;
-}
-
-function emptyCustomModelsResult(error?: string): CustomModelsResult {
-	return { models: [], overrides: new Map(), modelOverrides: new Map(), error };
-}
-
-function mergeCompat(
-	baseCompat: Model<Api>["compat"],
-	overrideCompat: ModelOverride["compat"],
-): Model<Api>["compat"] | undefined {
-	if (!overrideCompat) return baseCompat;
-
-	const base = baseCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | undefined;
-	const override = overrideCompat as OpenAICompletionsCompat | OpenAIResponsesCompat;
-	const merged = { ...base, ...override } as OpenAICompletionsCompat | OpenAIResponsesCompat;
-
-	const baseCompletions = base as OpenAICompletionsCompat | undefined;
-	const overrideCompletions = override as OpenAICompletionsCompat;
-	const mergedCompletions = merged as OpenAICompletionsCompat;
-
-	if (baseCompletions?.openRouterRouting || overrideCompletions.openRouterRouting) {
-		mergedCompletions.openRouterRouting = {
-			...baseCompletions?.openRouterRouting,
-			...overrideCompletions.openRouterRouting,
-		};
-	}
-
-	if (baseCompletions?.vercelGatewayRouting || overrideCompletions.vercelGatewayRouting) {
-		mergedCompletions.vercelGatewayRouting = {
-			...baseCompletions?.vercelGatewayRouting,
-			...overrideCompletions.vercelGatewayRouting,
-		};
-	}
-
-	return merged as Model<Api>["compat"];
-}
 
 /**
  * Deep merge a model override into a model.
@@ -241,7 +71,7 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 	}
 
 	// Deep merge compat
-	result.compat = mergeCompat(model.compat, override.compat);
+	result.compat = mergeModelCompat(model.compat, override.compat);
 
 	return result;
 }
@@ -298,12 +128,22 @@ export class ModelRegistry {
 			models: customModels,
 			overrides,
 			modelOverrides,
+			providerRequestConfigs,
+			modelRequestHeaders,
 			error,
-		} = this.modelsJsonPath ? this.loadCustomModels(this.modelsJsonPath) : emptyCustomModelsResult();
+		} = this.modelsJsonPath ? loadModelsConfig(this.modelsJsonPath) : createEmptyLoadedModelsConfig();
 
 		if (error) {
 			this.loadError = error;
 			// Keep built-in models even if custom models failed to load
+		}
+
+		for (const [providerName, providerConfig] of providerRequestConfigs.entries()) {
+			this.providerRequestConfigs.set(providerName, providerConfig);
+		}
+
+		for (const [key, headers] of modelRequestHeaders.entries()) {
+			this.modelRequestHeaders.set(key, headers);
 		}
 
 		const builtInModels = this.loadBuiltInModels(overrides, modelOverrides);
@@ -338,7 +178,7 @@ export class ModelRegistry {
 					model = {
 						...model,
 						baseUrl: providerOverride.baseUrl ?? model.baseUrl,
-						compat: mergeCompat(model.compat, providerOverride.compat),
+						compat: mergeModelCompat(model.compat, providerOverride.compat),
 					};
 				}
 
@@ -365,139 +205,6 @@ export class ModelRegistry {
 			}
 		}
 		return merged;
-	}
-
-	private loadCustomModels(modelsJsonPath: string): CustomModelsResult {
-		if (!existsSync(modelsJsonPath)) {
-			return emptyCustomModelsResult();
-		}
-
-		try {
-			const content = readFileSync(modelsJsonPath, "utf-8");
-			const config: ModelsConfig = JSON.parse(content);
-
-			// Validate schema
-			const validate = ajv.getSchema("ModelsConfig")!;
-			if (!validate(config)) {
-				const errors =
-					validate.errors?.map((e: any) => `  - ${e.instancePath || "root"}: ${e.message}`).join("\n") ||
-					"Unknown schema error";
-				return emptyCustomModelsResult(`Invalid models.json schema:\n${errors}\n\nFile: ${modelsJsonPath}`);
-			}
-
-			// Additional validation
-			this.validateConfig(config);
-
-			const overrides = new Map<string, ProviderOverride>();
-			const modelOverrides = new Map<string, Map<string, ModelOverride>>();
-
-			for (const [providerName, providerConfig] of Object.entries(config.providers)) {
-				if (providerConfig.baseUrl || providerConfig.compat) {
-					overrides.set(providerName, {
-						baseUrl: providerConfig.baseUrl,
-						compat: providerConfig.compat,
-					});
-				}
-
-				this.storeProviderRequestConfig(providerName, providerConfig);
-
-				if (providerConfig.modelOverrides) {
-					modelOverrides.set(providerName, new Map(Object.entries(providerConfig.modelOverrides)));
-					for (const [modelId, modelOverride] of Object.entries(providerConfig.modelOverrides)) {
-						this.storeModelHeaders(providerName, modelId, modelOverride.headers);
-					}
-				}
-			}
-
-			return { models: this.parseModels(config), overrides, modelOverrides, error: undefined };
-		} catch (error) {
-			if (error instanceof SyntaxError) {
-				return emptyCustomModelsResult(`Failed to parse models.json: ${error.message}\n\nFile: ${modelsJsonPath}`);
-			}
-			return emptyCustomModelsResult(
-				`Failed to load models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${modelsJsonPath}`,
-			);
-		}
-	}
-
-	private validateConfig(config: ModelsConfig): void {
-		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
-			const hasProviderApi = !!providerConfig.api;
-			const models = providerConfig.models ?? [];
-			const hasModelOverrides =
-				providerConfig.modelOverrides && Object.keys(providerConfig.modelOverrides).length > 0;
-
-			if (models.length === 0) {
-				// Override-only config: needs baseUrl, compat, modelOverrides, or some combination.
-				if (!providerConfig.baseUrl && !providerConfig.compat && !hasModelOverrides) {
-					throw new Error(
-						`Provider ${providerName}: must specify "baseUrl", "compat", "modelOverrides", or "models".`,
-					);
-				}
-			} else {
-				// Custom models are merged into provider models and require endpoint + auth.
-				if (!providerConfig.baseUrl) {
-					throw new Error(`Provider ${providerName}: "baseUrl" is required when defining custom models.`);
-				}
-				if (!providerConfig.apiKey) {
-					throw new Error(`Provider ${providerName}: "apiKey" is required when defining custom models.`);
-				}
-			}
-
-			for (const modelDef of models) {
-				const hasModelApi = !!modelDef.api;
-
-				if (!hasProviderApi && !hasModelApi) {
-					throw new Error(
-						`Provider ${providerName}, model ${modelDef.id}: no "api" specified. Set at provider or model level.`,
-					);
-				}
-
-				if (!modelDef.id) throw new Error(`Provider ${providerName}: model missing "id"`);
-				// Validate contextWindow/maxTokens only if provided (they have defaults)
-				if (modelDef.contextWindow !== undefined && modelDef.contextWindow <= 0)
-					throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid contextWindow`);
-				if (modelDef.maxTokens !== undefined && modelDef.maxTokens <= 0)
-					throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid maxTokens`);
-			}
-		}
-	}
-
-	private parseModels(config: ModelsConfig): Model<Api>[] {
-		const models: Model<Api>[] = [];
-
-		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
-			const modelDefs = providerConfig.models ?? [];
-			if (modelDefs.length === 0) continue; // Override-only, no custom models
-
-			for (const modelDef of modelDefs) {
-				const api = modelDef.api || providerConfig.api;
-				if (!api) continue;
-
-				const compat = mergeCompat(providerConfig.compat, modelDef.compat);
-				this.storeModelHeaders(providerName, modelDef.id, modelDef.headers);
-
-				// Provider baseUrl is required when custom models are defined.
-				// Individual models can override it with modelDef.baseUrl.
-				const defaultCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-				models.push({
-					id: modelDef.id,
-					name: modelDef.name ?? modelDef.id,
-					api: api as Api,
-					provider: providerName,
-					baseUrl: modelDef.baseUrl ?? providerConfig.baseUrl!,
-					reasoning: modelDef.reasoning ?? false,
-					input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
-					cost: modelDef.cost ?? defaultCost,
-					contextWindow: modelDef.contextWindow ?? 128000,
-					maxTokens: modelDef.maxTokens ?? 16384,
-					headers: undefined,
-					compat,
-				} as Model<Api>);
-			}
-		}
-
-		return models;
 	}
 
 	/**
@@ -537,7 +244,7 @@ export class ModelRegistry {
 
 	private hasResolvedRequestHeaders(model: Model<Api>): boolean {
 		const providerHeaders = this.providerRequestConfigs.get(model.provider)?.headers;
-		const modelHeaders = this.modelRequestHeaders.get(this.getModelRequestKey(model.provider, model.id));
+		const modelHeaders = this.modelRequestHeaders.get(getModelRequestKey(model.provider, model.id));
 		const configuredHeaders = [model.headers, providerHeaders, modelHeaders].filter(
 			(headers): headers is Record<string, string> => Boolean(headers && Object.keys(headers).length > 0),
 		);
@@ -560,10 +267,6 @@ export class ModelRegistry {
 		return hasApiKeySource || this.hasResolvedRequestHeaders(model);
 	}
 
-	private getModelRequestKey(provider: string, modelId: string): string {
-		return `${provider}:${modelId}`;
-	}
-
 	private storeProviderRequestConfig(
 		providerName: string,
 		config: {
@@ -584,7 +287,7 @@ export class ModelRegistry {
 	}
 
 	private storeModelHeaders(providerName: string, modelId: string, headers?: Record<string, string>): void {
-		const key = this.getModelRequestKey(providerName, modelId);
+		const key = getModelRequestKey(providerName, modelId);
 		if (!headers || Object.keys(headers).length === 0) {
 			this.modelRequestHeaders.delete(key);
 			return;
@@ -619,7 +322,7 @@ export class ModelRegistry {
 
 			const providerHeaders = resolveHeadersOrThrow(providerConfig?.headers, `provider "${model.provider}"`);
 			const modelHeaders = resolveHeadersOrThrow(
-				this.modelRequestHeaders.get(this.getModelRequestKey(model.provider, model.id)),
+				this.modelRequestHeaders.get(getModelRequestKey(model.provider, model.id)),
 				`model "${model.provider}/${model.id}"`,
 			);
 
