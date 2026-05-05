@@ -4,10 +4,14 @@ import { stream } from "../src/stream.js";
 import type { Api, Context, Model, StreamOptions } from "../src/types.js";
 
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
+type AbortProbeOptions = {
+	abortAfterChars?: number;
+};
 
 import { hasAzureOpenAICredentials, resolveAzureDeploymentName } from "./azure-utils.js";
 import { hasBedrockCredentials } from "./bedrock-utils.js";
 import { resolveApiKey } from "./oauth.js";
+import { isZaiProviderDriftError, logZaiProviderDrift, throwIfZaiRateLimited } from "./zai-provider-drift.js";
 
 // Resolve OAuth tokens at module level (async, runs before tests)
 const oauthTokens = await Promise.all([
@@ -19,7 +23,15 @@ const oauthTokens = await Promise.all([
 ]);
 const [anthropicOAuthToken, githubCopilotToken, geminiCliToken, antigravityToken, openaiCodexToken] = oauthTokens;
 
-async function testTokensOnAbort<TApi extends Api>(llm: Model<TApi>, options: StreamOptionsWithExtras = {}) {
+const DEFAULT_ABORT_AFTER_CHARS = 1000;
+const ZAI_ABORT_AFTER_CHARS = 100;
+
+async function testTokensOnAbort<TApi extends Api>(
+	llm: Model<TApi>,
+	options: StreamOptionsWithExtras = {},
+	probeOptions: AbortProbeOptions = {},
+) {
+	const { abortAfterChars = DEFAULT_ABORT_AFTER_CHARS } = probeOptions;
 	const context: Context = {
 		messages: [
 			{
@@ -39,7 +51,7 @@ async function testTokensOnAbort<TApi extends Api>(llm: Model<TApi>, options: St
 	for await (const event of response) {
 		if (!abortFired && (event.type === "text_delta" || event.type === "thinking_delta")) {
 			text += event.delta;
-			if (text.length >= 1000) {
+			if (text.length >= abortAfterChars) {
 				abortFired = true;
 				controller.abort();
 			}
@@ -47,6 +59,7 @@ async function testTokensOnAbort<TApi extends Api>(llm: Model<TApi>, options: St
 	}
 
 	const msg = await response.result();
+	throwIfZaiRateLimited("the abort token statistics probe", msg);
 
 	expect(msg.stopReason).toBe("aborted");
 
@@ -171,7 +184,18 @@ describe("Token Statistics on Abort", () => {
 		const llm = getModel("zai", "glm-4.5-flash");
 
 		it("should include token stats when aborted mid-stream", { retry: 3, timeout: 30000 }, async () => {
-			await testTokensOnAbort(llm);
+			try {
+				// z.ai can 429 under suite load before any stream delta arrives, and waiting for
+				// 1000 chars turns this into a latency race against the shared 30s live-test timeout.
+				await testTokensOnAbort(llm, {}, { abortAfterChars: ZAI_ABORT_AFTER_CHARS });
+			} catch (error) {
+				if (isZaiProviderDriftError(error)) {
+					logZaiProviderDrift(error);
+					return;
+				}
+
+				throw error;
+			}
 		});
 	});
 
