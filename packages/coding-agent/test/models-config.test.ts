@@ -9,6 +9,7 @@ import {
 	loadModelsConfig,
 	ModelsConfigSchemaError,
 	ModelsConfigSemanticError,
+	mergeModelCompat,
 	parseModelsConfig,
 } from "../src/core/models-config.js";
 
@@ -111,6 +112,38 @@ describe("models-config", () => {
 		expect(analysis.modelRequestHeaders.get(getModelRequestKey("demo", "demo-model"))).toEqual({
 			"X-Model-Header": "model",
 		});
+	});
+
+	test("mergeModelCompat deep merges nested routing compat objects", () => {
+		const baseCompat: OpenAICompletionsCompat = {
+			supportsUsageInStreaming: false,
+			supportsStrictMode: true,
+			openRouterRouting: { only: ["amazon-bedrock"] },
+			vercelGatewayRouting: { only: ["bedrock"] },
+		};
+		const overrideCompat: OpenAICompletionsCompat = {
+			maxTokensField: "max_completion_tokens",
+			openRouterRouting: { order: ["anthropic", "together"] },
+			vercelGatewayRouting: { order: ["anthropic", "openai"] },
+		};
+
+		const mergedCompat = mergeModelCompat(baseCompat, overrideCompat) as OpenAICompletionsCompat;
+
+		expect(mergedCompat).toEqual({
+			supportsUsageInStreaming: false,
+			supportsStrictMode: true,
+			maxTokensField: "max_completion_tokens",
+			openRouterRouting: {
+				only: ["amazon-bedrock"],
+				order: ["anthropic", "together"],
+			},
+			vercelGatewayRouting: {
+				only: ["bedrock"],
+				order: ["anthropic", "openai"],
+			},
+		});
+		expect(baseCompat.openRouterRouting).toEqual({ only: ["amazon-bedrock"] });
+		expect(baseCompat.vercelGatewayRouting).toEqual({ only: ["bedrock"] });
 	});
 
 	test("parseModelsConfig throws schema errors for invalid shapes", () => {
