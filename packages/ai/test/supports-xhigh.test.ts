@@ -20,6 +20,18 @@ describe("supportsXhigh", () => {
 		expect(supportsXhigh(model!)).toBe(true);
 	});
 
+	it("returns true for registry-backed GPT-5.5 models", () => {
+		const model = getModel("openai", "gpt-5.5");
+		expect(model).toBeDefined();
+		expect(supportsXhigh(model!)).toBe(true);
+	});
+
+	it("returns true for registry-backed GPT-5.5 Pro models", () => {
+		const model = getModel("openai", "gpt-5.5-pro");
+		expect(model).toBeDefined();
+		expect(supportsXhigh(model!)).toBe(true);
+	});
+
 	it("returns true for OpenRouter Opus 4.6 (openai-completions API)", () => {
 		const model = getModel("openrouter", "anthropic/claude-opus-4.6");
 		expect(model).toBeDefined();
