@@ -280,7 +280,7 @@ Use `modelOverrides` to customize specific built-in models without replacing the
 
 Behavior notes:
 - `modelOverrides` are applied to built-in provider models.
-- Unknown model IDs are ignored.
+- Unknown `modelOverrides` IDs are invalid and rejected.
 - You can combine provider-level `baseUrl`/`headers` with `modelOverrides`.
 - If `models` is also defined for a provider, custom models are merged after built-in overrides. A custom model with the same `id` replaces the overridden built-in model entry.
 
