@@ -280,7 +280,7 @@ Use `modelOverrides` to customize specific built-in models without replacing the
 
 Behavior notes:
 - `modelOverrides` are applied to built-in provider models.
-- Unknown `modelOverrides` IDs are invalid and rejected.
+- Unknown `modelOverrides` IDs are effectively ignored by raw registry loading, but `tsar models validate` and `tsar models sync --normalize` treat them as invalid and fail.
 - You can combine provider-level `baseUrl`/`headers` with `modelOverrides`.
 - If `models` is also defined for a provider, custom models are merged after built-in overrides. A custom model with the same `id` replaces the overridden built-in model entry.
 
