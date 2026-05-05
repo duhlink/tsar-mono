@@ -7,7 +7,7 @@ import { keyHint } from "../../modes/interactive/components/keybinding-hints.js"
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { withFileMutationQueue } from "./file-mutation-queue.js";
-import { resolveToCwd } from "./path-utils.js";
+import { assertWritableRuntimeArtifactPath, resolveToCwd } from "./path-utils.js";
 import { invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
@@ -199,6 +199,7 @@ export function createWriteToolDefinition(
 			_ctx?,
 		) {
 			const absolutePath = resolveToCwd(path, cwd);
+			assertWritableRuntimeArtifactPath(absolutePath);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(
 				absolutePath,

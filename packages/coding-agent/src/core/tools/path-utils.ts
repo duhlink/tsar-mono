@@ -1,9 +1,39 @@
 import { accessSync, constants } from "node:fs";
 import * as os from "node:os";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import { isAbsolute, resolve as resolvePath, sep } from "node:path";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 const NARROW_NO_BREAK_SPACE = "\u202F";
+
+const RUNTIME_ARTIFACT_SOURCE_TREE_SEGMENTS = ["packages", "src", ".tsar"];
+
+function normalizePathSegments(filePath: string): string[] {
+	return resolvePath(filePath)
+		.split(sep)
+		.filter((segment) => segment.length > 0);
+}
+
+export function isTrackedRuntimeArtifactPath(filePath: string): boolean {
+	const segments = normalizePathSegments(filePath);
+	for (let i = 0; i <= segments.length - 4; i++) {
+		if (segments[i] !== RUNTIME_ARTIFACT_SOURCE_TREE_SEGMENTS[0]) continue;
+		if (!segments[i + 1] || segments[i + 1] === ".tsar") continue;
+		if (segments[i + 2] !== RUNTIME_ARTIFACT_SOURCE_TREE_SEGMENTS[1]) continue;
+		if (segments[i + 3] !== RUNTIME_ARTIFACT_SOURCE_TREE_SEGMENTS[2]) continue;
+		return true;
+	}
+	return false;
+}
+
+export function assertWritableRuntimeArtifactPath(filePath: string): void {
+	if (!isTrackedRuntimeArtifactPath(filePath)) {
+		return;
+	}
+
+	throw new Error(
+		`Refusing to write runtime artifacts under tracked package source trees: ${filePath}\nBlocked pattern: packages/*/src/.tsar/**\nChoose an external runtime path instead (for example ~/.tsar/agent/... or another non-source output directory).`,
+	);
+}
 function normalizeUnicodeSpaces(str: string): string {
 	return str.replace(UNICODE_SPACES, " ");
 }

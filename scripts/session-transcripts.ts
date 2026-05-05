@@ -12,19 +12,20 @@
 import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { spawn } from "child_process";
 import { createInterface } from "readline";
-import { homedir } from "os";
+import { homedir } from "node:os";
 import { join, resolve } from "path";
+import { pathToFileURL } from "node:url";
 import { parseSessionEntries, type SessionMessageEntry } from "../packages/coding-agent/src/core/session-manager.js";
 import chalk from "chalk";
 
 const MAX_CHARS_PER_FILE = 100_000; // ~20k tokens, leaving room for prompt + analysis + output
 
-function cwdToSessionDir(cwd: string): string {
+export function cwdToSessionDir(cwd: string): string {
 	const normalized = resolve(cwd).replace(/\//g, "-");
 	return `--${normalized.slice(1)}--`; // Remove leading slash, wrap with --
 }
 
-function extractTextContent(content: string | Array<{ type: string; text?: string }>): string {
+export function extractTextContent(content: string | Array<{ type: string; text?: string }>): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 
@@ -34,7 +35,7 @@ function extractTextContent(content: string | Array<{ type: string; text?: strin
 		.join("\n");
 }
 
-function parseSession(filePath: string): string[] {
+export function parseSession(filePath: string): string[] {
 	const content = readFileSync(filePath, "utf8");
 	const entries = parseSessionEntries(content);
 	const messages: string[] = [];
@@ -42,7 +43,9 @@ function parseSession(filePath: string): string[] {
 	for (const entry of entries) {
 		if (entry.type !== "message") continue;
 		const msgEntry = entry as SessionMessageEntry;
-		const { role, content } = msgEntry.message;
+		const message = msgEntry.message;
+		if (!("role" in message) || !("content" in message)) continue;
+		const { role, content } = message;
 
 		if (role !== "user" && role !== "assistant") continue;
 
@@ -73,6 +76,20 @@ interface JsonEvent {
 		limit?: number;
 		content?: string;
 	};
+}
+
+
+export interface SessionTranscriptPaths {
+	transcriptOutputDir: string;
+	analysisOutputDir: string;
+	sessionDir: string;
+}
+
+export function getSessionTranscriptPaths(cwd: string, requestedOutputDir: string): SessionTranscriptPaths {
+	const sessionDir = join(homedir(), ".tsar/agent/sessions", cwdToSessionDir(cwd));
+	const transcriptOutputDir = resolve(requestedOutputDir);
+	const analysisOutputDir = join(homedir(), ".tsar/agent/analysis", "session-transcripts", cwdToSessionDir(cwd));
+	return { transcriptOutputDir, analysisOutputDir, sessionDir };
 }
 
 function runSubagent(prompt: string, cwd: string): Promise<{ success: boolean }> {
@@ -146,9 +163,9 @@ async function main() {
 
 	// Parse --output <dir>
 	const outputIdx = args.indexOf("--output");
-	let outputDir = resolve("./session-transcripts");
+	let requestedOutputDir = resolve("./session-transcripts");
 	if (outputIdx !== -1 && args[outputIdx + 1]) {
-		outputDir = resolve(args[outputIdx + 1]);
+		requestedOutputDir = resolve(args[outputIdx + 1]);
 	}
 
 	// Find cwd (positional arg that's not a flag or flag value)
@@ -161,10 +178,8 @@ async function main() {
 	const cwdArg = args.find((a, i) => !flagIndices.has(i) && !a.startsWith("--"));
 	const cwd = resolve(cwdArg || process.cwd());
 
-	mkdirSync(outputDir, { recursive: true });
-	const sessionsBase = join(homedir(), ".tsar/agent/sessions");
-	const sessionDirName = cwdToSessionDir(cwd);
-	const sessionDir = join(sessionsBase, sessionDirName);
+	const { transcriptOutputDir, analysisOutputDir, sessionDir } = getSessionTranscriptPaths(cwd, requestedOutputDir);
+	mkdirSync(transcriptOutputDir, { recursive: true });
 
 	if (!existsSync(sessionDir)) {
 		console.error(`No sessions found for ${cwd}`);
@@ -202,7 +217,7 @@ async function main() {
 		// If adding this transcript would exceed limit, write current and start new
 		if (currentContent.length > 0 && currentContent.length + transcript.length + 2 > MAX_CHARS_PER_FILE) {
 			const filename = `session-transcripts-${String(fileIndex).padStart(3, "0")}.txt`;
-			writeFileSync(join(outputDir, filename), currentContent);
+			writeFileSync(join(transcriptOutputDir, filename), currentContent);
 			outputFiles.push(filename);
 			console.log(`Wrote ${filename} (${currentContent.length} chars)`);
 			currentContent = "";
@@ -214,7 +229,7 @@ async function main() {
 			// Write any pending content first
 			if (currentContent.length > 0) {
 				const filename = `session-transcripts-${String(fileIndex).padStart(3, "0")}.txt`;
-				writeFileSync(join(outputDir, filename), currentContent);
+				writeFileSync(join(transcriptOutputDir, filename), currentContent);
 				outputFiles.push(filename);
 				console.log(`Wrote ${filename} (${currentContent.length} chars)`);
 				currentContent = "";
@@ -222,7 +237,7 @@ async function main() {
 			}
 			// Write the large transcript to its own file
 			const filename = `session-transcripts-${String(fileIndex).padStart(3, "0")}.txt`;
-			writeFileSync(join(outputDir, filename), transcript);
+			writeFileSync(join(transcriptOutputDir, filename), transcript);
 			outputFiles.push(filename);
 			console.log(chalk.yellow(`Wrote ${filename} (${transcript.length} chars) - oversized`));
 			fileIndex++;
@@ -235,12 +250,12 @@ async function main() {
 	// Write remaining content
 	if (currentContent.length > 0) {
 		const filename = `session-transcripts-${String(fileIndex).padStart(3, "0")}.txt`;
-		writeFileSync(join(outputDir, filename), currentContent);
+		writeFileSync(join(transcriptOutputDir, filename), currentContent);
 		outputFiles.push(filename);
 		console.log(`Wrote ${filename} (${currentContent.length} chars)`);
 	}
 
-	console.log(`\nCreated ${outputFiles.length} transcript file(s) in ${outputDir}`);
+	console.log(`\nCreated ${outputFiles.length} transcript file(s) in ${transcriptOutputDir}`);
 
 	if (!analyzeFlag) {
 		console.log("\nRun with --analyze to spawn tsar subagents for pattern analysis.");
@@ -300,8 +315,8 @@ Rules:
 	console.log("\nSpawning subagents for analysis...");
 	for (const file of outputFiles) {
 		const summaryFile = file.replace(".txt", ".summary.txt");
-		const filePath = join(outputDir, file);
-		const summaryPath = join(outputDir, summaryFile);
+		const filePath = join(transcriptOutputDir, file);
+		const summaryPath = join(analysisOutputDir, summaryFile);
 
 		const fileContent = readFileSync(filePath, "utf8");
 		const fileSize = fileContent.length;
@@ -311,7 +326,8 @@ Rules:
 		const lineCount = fileContent.split("\n").length;
 		const fullPrompt = `${analysisPrompt}\n\nThe file ${filePath} has ${lineCount} lines. Read it in full using chunked reads, then write your analysis to ${summaryPath}`;
 
-		const result = await runSubagent(fullPrompt, outputDir);
+		mkdirSync(analysisOutputDir, { recursive: true });
+		const result = await runSubagent(fullPrompt, transcriptOutputDir);
 
 		if (result.success && existsSync(summaryPath)) {
 			console.log(chalk.green(`  -> ${summaryFile}`));
@@ -323,7 +339,7 @@ Rules:
 	}
 
 	// Collect all created summary files
-	const summaryFiles = readdirSync(outputDir)
+	const summaryFiles = readdirSync(analysisOutputDir)
 		.filter((f) => f.endsWith(".summary.txt"))
 		.sort();
 
@@ -338,8 +354,8 @@ Rules:
 	// Final aggregation step
 	console.log("\nAggregating findings into final summary...");
 
-	const summaryPaths = summaryFiles.map((f) => join(outputDir, f)).join("\n");
-	const finalSummaryPath = join(outputDir, "FINAL-SUMMARY.txt");
+	const summaryPaths = summaryFiles.map((f) => join(analysisOutputDir, f)).join("\n");
+	const finalSummaryPath = join(analysisOutputDir, "FINAL-SUMMARY.txt");
 
 	const aggregationPrompt = `You are aggregating pattern analysis results from multiple summary files.
 
@@ -391,7 +407,7 @@ Already covered by: <quote relevant section from AGENTS.md>
 
 Write the final summary to ${finalSummaryPath}`;
 
-	const aggregateResult = await runSubagent(aggregationPrompt, outputDir);
+	const aggregateResult = await runSubagent(aggregationPrompt, transcriptOutputDir);
 
 	if (aggregateResult.success && existsSync(finalSummaryPath)) {
 		console.log(chalk.green(`\n=== Final Summary Created ===`));
@@ -403,4 +419,6 @@ Write the final summary to ${finalSummaryPath}`;
 	}
 }
 
-main().catch(console.error);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	main().catch(console.error);
+}

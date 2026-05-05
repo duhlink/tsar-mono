@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBash } from "../src/core/bash-executor.js";
 import { bashTool, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.js";
@@ -10,7 +10,7 @@ import { grepTool } from "../src/core/tools/grep.js";
 import { lsTool } from "../src/core/tools/ls.js";
 import { createReadTool, readTool } from "../src/core/tools/read.js";
 import { BASH_MAX_BYTES, BASH_MAX_LINES, truncateTail } from "../src/core/tools/truncate.js";
-import { writeTool } from "../src/core/tools/write.js";
+import { createWriteTool, writeTool } from "../src/core/tools/write.js";
 import * as shellModule from "../src/utils/shell.js";
 
 // Helper to extract text from content blocks
@@ -299,6 +299,16 @@ describe("Coding Agent Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully wrote");
 		});
+		it("should reject tracked package source .tsar runtime-artifact writes", async () => {
+			const guardedWriteTool = createWriteTool(testDir);
+
+			await expect(
+				guardedWriteTool.execute("test-call-4b", {
+					path: join(testDir, "packages", "coding-agent", "src", ".tsar", "analysis", "write.txt"),
+					content: "blocked",
+				}),
+			).rejects.toThrow(/packages\/\*\/src\/\.tsar\/\*\*/);
+		});
 	});
 
 	describe("edit tool", () => {
@@ -317,6 +327,19 @@ describe("Coding Agent Tools", () => {
 			expect(result.details.diff).toBeDefined();
 			expect(typeof result.details.diff).toBe("string");
 			expect(result.details.diff).toContain("testing");
+		});
+
+		it("should reject tracked package source .tsar runtime-artifact edits", async () => {
+			const guardedFile = join(testDir, "packages", "coding-agent", "src", ".tsar", "analysis", "edit.txt");
+			mkdirSync(dirname(guardedFile), { recursive: true });
+			writeFileSync(guardedFile, "before\n");
+
+			await expect(
+				editTool.execute("test-call-5b", {
+					path: guardedFile,
+					edits: [{ oldText: "before", newText: "after" }],
+				}),
+			).rejects.toThrow(/packages\/\*\/src\/\.tsar\/\*\*/);
 		});
 
 		it("should fail if text not found", async () => {

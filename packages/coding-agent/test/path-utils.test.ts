@@ -2,7 +2,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { expandPath, resolveReadPath, resolveRuntimeCwd, resolveToCwd } from "../src/core/tools/path-utils.js";
+import {
+	assertWritableRuntimeArtifactPath,
+	expandPath,
+	isTrackedRuntimeArtifactPath,
+	resolveReadPath,
+	resolveRuntimeCwd,
+	resolveToCwd,
+} from "../src/core/tools/path-utils.js";
 
 describe("path-utils", () => {
 	describe("expandPath", () => {
@@ -76,6 +83,26 @@ describe("path-utils", () => {
 			} finally {
 				cwdSpy.mockRestore();
 			}
+		});
+	});
+
+	describe("runtime artifact guards", () => {
+		it("detects tracked package source .tsar paths", () => {
+			const guardedPath = resolve("/repo", "packages/coding-agent/src/.tsar/analysis/result.txt");
+			expect(isTrackedRuntimeArtifactPath(guardedPath)).toBe(true);
+		});
+
+		it("allows .tsar paths outside tracked package source trees", () => {
+			const allowedProjectPath = resolve("/repo", ".tsar/analysis/result.txt");
+			const allowedDocsPath = resolve("/repo", "packages/coding-agent/docs/.tsar/notes.txt");
+			expect(isTrackedRuntimeArtifactPath(allowedProjectPath)).toBe(false);
+			expect(isTrackedRuntimeArtifactPath(allowedDocsPath)).toBe(false);
+		});
+
+		it("throws an actionable error for tracked package source .tsar writes", () => {
+			const guardedPath = resolve("/repo", "packages/coding-agent/src/.tsar/analysis/result.txt");
+			expect(() => assertWritableRuntimeArtifactPath(guardedPath)).toThrow(/packages\/\*\/src\/\.tsar\/\*\*/);
+			expect(() => assertWritableRuntimeArtifactPath(guardedPath)).toThrow(/external runtime path/i);
 		});
 	});
 
