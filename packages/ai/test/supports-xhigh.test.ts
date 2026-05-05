@@ -20,6 +20,12 @@ describe("supportsXhigh", () => {
 		expect(supportsXhigh(model!)).toBe(true);
 	});
 
+	it("returns true for registry-backed Codex GPT-5.5 models", () => {
+		const model = getModel("openai-codex", "gpt-5.5");
+		expect(model).toMatchObject({ id: "gpt-5.5", provider: "openai-codex" });
+		expect(supportsXhigh(model!)).toBe(true);
+	});
+
 	it("returns true for registry-backed GPT-5.5 models", () => {
 		const model = getModel("openai", "gpt-5.5");
 		expect(model).toBeDefined();
