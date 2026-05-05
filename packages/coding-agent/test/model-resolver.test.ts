@@ -391,9 +391,9 @@ describe("resolveCliModel", () => {
 });
 
 describe("default model selection", () => {
-	test("openai defaults are gpt-5.4", () => {
+	test("openai and openai-codex defaults are split", () => {
 		expect(defaultModelPerProvider.openai).toBe("gpt-5.4");
-		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.4");
+		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
 	});
 
 	test("zai, minimax, and cerebras defaults track current models", () => {

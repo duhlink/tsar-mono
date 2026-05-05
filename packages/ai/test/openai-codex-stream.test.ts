@@ -73,6 +73,24 @@ function buildSSEPayload({
 	return `${events.join("\n\n")}\n\n`;
 }
 
+function readModelField(value: unknown): string | undefined {
+	if (typeof value !== "object" || value === null) {
+		return undefined;
+	}
+
+	const model = (value as Record<string, unknown>).model;
+	return typeof model === "string" ? model : undefined;
+}
+
+function readRequestBodyModel(init?: RequestInit): string | undefined {
+	if (typeof init?.body !== "string") {
+		return undefined;
+	}
+
+	const parsed = JSON.parse(init.body) as unknown;
+	return readModelField(parsed);
+}
+
 describe("openai-codex streaming", () => {
 	it("streams SSE responses into AssistantMessageEventStream", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "tsar-codex-stream-"));
@@ -183,6 +201,70 @@ describe("openai-codex streaming", () => {
 
 		expect(sawTextDelta).toBe(true);
 		expect(sawDone).toBe(true);
+	});
+
+	it("sends gpt-5.5 as the Codex request model", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "tsar-codex-stream-"));
+		process.env.TSAR_CODING_AGENT_DIR = tempDir;
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		const sse = buildSSEPayload({ status: "completed" });
+		let onPayloadModel: string | undefined;
+		let requestBodyModel: string | undefined;
+
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode(sse));
+				controller.close();
+			},
+		});
+
+		const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url === "https://chatgpt.com/backend-api/codex/responses") {
+				requestBodyModel = readRequestBodyModel(init);
+				expect(requestBodyModel).toBe("gpt-5.5");
+				return new Response(stream, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}
+			return new Response("unexpected url", { status: 500 });
+		});
+
+		global.fetch = fetchMock as typeof fetch;
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+
+		const streamResult = streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			onPayload: (payload, payloadModel) => {
+				expect(payloadModel.provider).toBe("openai-codex");
+				expect(payloadModel.id).toBe("gpt-5.5");
+				onPayloadModel = readModelField(payload);
+				expect(onPayloadModel).toBe("gpt-5.5");
+			},
+		});
+
+		await streamResult.result();
+		expect(onPayloadModel).toBe("gpt-5.5");
+		expect(requestBodyModel).toBe("gpt-5.5");
+		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
 	it("completes after response.completed even when the SSE body stays open", async () => {
