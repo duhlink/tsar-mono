@@ -23,8 +23,8 @@ import {
 	createEmptyLoadedModelsConfig,
 	getModelRequestKey,
 	loadModelsConfig,
-	mergeModelCompat,
 	type ModelOverride,
+	mergeModelCompat,
 	type ProviderOverride,
 	type ProviderRequestConfig,
 } from "./models-config.js";

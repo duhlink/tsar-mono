@@ -1,7 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
 import { type Static, Type } from "@sinclair/typebox";
 import type { Api, Model, OpenAICompletionsCompat, OpenAIResponsesCompat } from "@tsar/ai";
 import AjvModule from "ajv";
-import { existsSync, readFileSync } from "node:fs";
 
 const Ajv = (AjvModule as any).default || AjvModule;
 const ajv = new Ajv();
@@ -391,10 +391,14 @@ export function loadModelsConfig(modelsJsonPath: string): LoadedModelsConfig {
 		return analyzeModelsConfig(parseModelsConfig(content));
 	} catch (error) {
 		if (error instanceof SyntaxError) {
-			return createEmptyLoadedModelsConfig(`Failed to parse models.json: ${error.message}\n\nFile: ${modelsJsonPath}`);
+			return createEmptyLoadedModelsConfig(
+				`Failed to parse models.json: ${error.message}\n\nFile: ${modelsJsonPath}`,
+			);
 		}
 		if (error instanceof ModelsConfigSchemaError) {
-			return createEmptyLoadedModelsConfig(`Invalid models.json schema:\n${error.message}\n\nFile: ${modelsJsonPath}`);
+			return createEmptyLoadedModelsConfig(
+				`Invalid models.json schema:\n${error.message}\n\nFile: ${modelsJsonPath}`,
+			);
 		}
 		return createEmptyLoadedModelsConfig(
 			`Failed to load models.json: ${error instanceof Error ? error.message : String(error)}\n\nFile: ${modelsJsonPath}`,
