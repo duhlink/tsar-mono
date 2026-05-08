@@ -231,18 +231,44 @@ export function parseModelsConfig(content: string): ModelsConfig {
 	return config;
 }
 
+function hasNonEmptyRecord(record: Record<string, unknown> | undefined): boolean {
+	return record !== undefined && Object.keys(record).length > 0;
+}
+
+function hasProviderApiKeySource(providerConfig: ProviderConfig): boolean {
+	return typeof providerConfig.apiKey === "string" && providerConfig.apiKey.length > 0;
+}
+
+function hasProviderRequestOverlay(providerConfig: ProviderConfig): boolean {
+	return (
+		hasProviderApiKeySource(providerConfig) ||
+		hasNonEmptyRecord(providerConfig.headers) ||
+		providerConfig.authHeader === true
+	);
+}
+
 export function validateModelsConfigSemantics(config: ModelsConfig): void {
 	for (const [providerName, providerConfig] of Object.entries(config.providers)) {
 		const hasProviderApi = !!providerConfig.api;
+		const hasApiKeySource = hasProviderApiKeySource(providerConfig);
 		const models = providerConfig.models ?? [];
-		const hasModelOverrides =
-			providerConfig.modelOverrides !== undefined && Object.keys(providerConfig.modelOverrides).length > 0;
+		const hasModelOverrides = hasNonEmptyRecord(providerConfig.modelOverrides);
 
 		if (models.length === 0) {
-			// Override-only config: needs baseUrl, compat, modelOverrides, or some combination.
-			if (!providerConfig.baseUrl && !providerConfig.compat && !hasModelOverrides) {
+			// Built-in provider overlays may configure endpoint/model metadata or request auth/headers.
+			if (providerConfig.authHeader === true && !hasApiKeySource) {
 				throw new ModelsConfigSemanticError(
-					`Provider ${providerName}: must specify "baseUrl", "compat", "modelOverrides", or "models".`,
+					`Provider ${providerName}: "authHeader" requires "apiKey" in models.json.`,
+				);
+			}
+			if (
+				!providerConfig.baseUrl &&
+				!providerConfig.compat &&
+				!hasModelOverrides &&
+				!hasProviderRequestOverlay(providerConfig)
+			) {
+				throw new ModelsConfigSemanticError(
+					`Provider ${providerName}: must specify "baseUrl", "compat", "modelOverrides", "models", "apiKey", or "headers".`,
 				);
 			}
 		} else {
@@ -252,7 +278,7 @@ export function validateModelsConfigSemantics(config: ModelsConfig): void {
 					`Provider ${providerName}: "baseUrl" is required when defining custom models.`,
 				);
 			}
-			if (!providerConfig.apiKey) {
+			if (!hasApiKeySource) {
 				throw new ModelsConfigSemanticError(
 					`Provider ${providerName}: "apiKey" is required when defining custom models.`,
 				);

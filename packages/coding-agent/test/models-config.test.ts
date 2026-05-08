@@ -33,6 +33,19 @@ describe("models-config", () => {
 		writeFileSync(modelsJsonPath, content);
 	}
 
+	function expectModelsConfigSemanticError(action: () => void): ModelsConfigSemanticError {
+		try {
+			action();
+		} catch (error) {
+			if (error instanceof ModelsConfigSemanticError) {
+				return error;
+			}
+			throw error;
+		}
+
+		throw new Error("Expected ModelsConfigSemanticError");
+	}
+
 	test("parse/analyze extracts custom models, overrides, and request metadata", () => {
 		const config = parseModelsConfig(
 			JSON.stringify({
@@ -112,6 +125,158 @@ describe("models-config", () => {
 		expect(analysis.modelRequestHeaders.get(getModelRequestKey("demo", "demo-model"))).toEqual({
 			"X-Model-Header": "model",
 		});
+	});
+
+	test("analyzeModelsConfig accepts apiKey-only provider overlays", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					anthropic: {
+						apiKey: "ANTHROPIC_API_KEY",
+					},
+				},
+			}),
+		);
+
+		const analysis = analyzeModelsConfig(config);
+
+		expect(analysis.models).toEqual([]);
+		expect(analysis.overrides.size).toBe(0);
+		expect(analysis.providerRequestConfigs.get("anthropic")).toEqual({
+			apiKey: "ANTHROPIC_API_KEY",
+			headers: undefined,
+			authHeader: undefined,
+		});
+	});
+
+	test("analyzeModelsConfig accepts headers-only provider overlays", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					openrouter: {
+						headers: { "HTTP-Referer": "https://example.com" },
+					},
+				},
+			}),
+		);
+
+		const analysis = analyzeModelsConfig(config);
+
+		expect(analysis.models).toEqual([]);
+		expect(analysis.overrides.size).toBe(0);
+		expect(analysis.providerRequestConfigs.get("openrouter")).toEqual({
+			apiKey: undefined,
+			headers: { "HTTP-Referer": "https://example.com" },
+			authHeader: undefined,
+		});
+	});
+
+	test("analyzeModelsConfig accepts authHeader provider overlays with an apiKey source", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					openai: {
+						apiKey: "OPENAI_API_KEY",
+						authHeader: true,
+					},
+				},
+			}),
+		);
+
+		const analysis = analyzeModelsConfig(config);
+
+		expect(analysis.models).toEqual([]);
+		expect(analysis.overrides.size).toBe(0);
+		expect(analysis.providerRequestConfigs.get("openai")).toEqual({
+			apiKey: "OPENAI_API_KEY",
+			headers: undefined,
+			authHeader: true,
+		});
+	});
+
+	test("analyzeModelsConfig rejects empty provider configs", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					empty: {},
+				},
+			}),
+		);
+
+		const error = expectModelsConfigSemanticError(() => analyzeModelsConfig(config));
+
+		expect(error.message).toBe(
+			'Provider empty: must specify "baseUrl", "compat", "modelOverrides", "models", "apiKey", or "headers".',
+		);
+	});
+
+	test("analyzeModelsConfig rejects authHeader provider overlays without an apiKey source", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					openai: {
+						authHeader: true,
+					},
+				},
+			}),
+		);
+
+		const error = expectModelsConfigSemanticError(() => analyzeModelsConfig(config));
+
+		expect(error.message).toBe('Provider openai: "authHeader" requires "apiKey" in models.json.');
+	});
+
+	test("analyzeModelsConfig keeps existing override-only provider overlays valid", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					baseUrlOnly: {
+						baseUrl: "https://example.com/v1",
+					},
+					compatOnly: {
+						compat: { supportsUsageInStreaming: false },
+					},
+					modelOverridesOnly: {
+						modelOverrides: {
+							"provider/model": { name: "Renamed Model" },
+						},
+					},
+				},
+			}),
+		);
+
+		const analysis = analyzeModelsConfig(config);
+
+		expect(analysis.overrides.get("baseUrlOnly")).toEqual({
+			baseUrl: "https://example.com/v1",
+			compat: undefined,
+		});
+		expect(analysis.overrides.get("compatOnly")).toEqual({
+			baseUrl: undefined,
+			compat: { supportsUsageInStreaming: false },
+		});
+		expect(analysis.modelOverrides.get("modelOverridesOnly")?.get("provider/model")).toEqual({
+			name: "Renamed Model",
+		});
+		expect(analysis.providerRequestConfigs.size).toBe(0);
+	});
+
+	test("analyzeModelsConfig still requires baseUrl for custom model definitions", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					demo: {
+						apiKey: "DEMO_KEY",
+						api: "openai-completions",
+						models: [{ id: "demo-model" }],
+					},
+				},
+			}),
+		);
+
+		const error = expectModelsConfigSemanticError(() => analyzeModelsConfig(config));
+
+		expect(error.message).toBe('Provider demo: "baseUrl" is required when defining custom models.');
 	});
 
 	test("mergeModelCompat deep merges nested routing compat objects", () => {
