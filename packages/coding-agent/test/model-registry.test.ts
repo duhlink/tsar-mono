@@ -1188,6 +1188,43 @@ describe("ModelRegistry", () => {
 				});
 			});
 
+			test("models.json authHeader-only built-in provider overlay loads and fails request auth without API key", async () => {
+				const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+
+				try {
+					delete process.env.OPENAI_API_KEY;
+					authStorage.remove("openai");
+					writeRawModelsJson({
+						openai: {
+							authHeader: true,
+						},
+					});
+
+					const registry = new ModelRegistry(authStorage, modelsJsonPath);
+					expect(registry.getError()).toBeUndefined();
+					const [model] = getModelsForProvider(registry, "openai");
+					expect(model).toBeDefined();
+					if (!model) {
+						throw new Error("Expected built-in openai model");
+					}
+
+					const auth = await registry.getApiKeyAndHeaders(model);
+					expect(auth.ok).toBe(false);
+					if (!auth.ok) {
+						expect(auth.error).toContain("No API key found");
+						expect(auth.error).toContain('"openai"');
+						expect(auth.error).toContain("models.json");
+						expect(auth.error).toContain("provider configuration");
+					}
+				} finally {
+					if (originalOpenAiApiKey === undefined) {
+						delete process.env.OPENAI_API_KEY;
+					} else {
+						process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+					}
+				}
+			});
+
 			test("getApiKeyAndHeaders resolves authHeader on every request", async () => {
 				const tokenFile = join(tempDir, "token");
 				writeFileSync(tokenFile, "token-1");

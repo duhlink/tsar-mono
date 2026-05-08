@@ -256,11 +256,6 @@ export function validateModelsConfigSemantics(config: ModelsConfig): void {
 
 		if (models.length === 0) {
 			// Built-in provider overlays may configure endpoint/model metadata or request auth/headers.
-			if (providerConfig.authHeader === true && !hasApiKeySource) {
-				throw new ModelsConfigSemanticError(
-					`Provider ${providerName}: "authHeader" requires "apiKey" in models.json.`,
-				);
-			}
 			if (
 				!providerConfig.baseUrl &&
 				!providerConfig.compat &&

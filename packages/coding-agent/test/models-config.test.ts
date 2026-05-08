@@ -210,20 +210,22 @@ describe("models-config", () => {
 		);
 	});
 
-	test("analyzeModelsConfig rejects authHeader provider overlays without an apiKey source", () => {
-		const config = parseModelsConfig(
-			JSON.stringify({
-				providers: {
-					openai: {
-						authHeader: true,
-					},
+	test("analyzeModelsConfig accepts authHeader provider overlays without an apiKey source", () => {
+		const analysis = analyzeModelsConfig({
+			providers: {
+				openai: {
+					authHeader: true,
 				},
-			}),
-		);
+			},
+		});
 
-		const error = expectModelsConfigSemanticError(() => analyzeModelsConfig(config));
-
-		expect(error.message).toBe('Provider openai: "authHeader" requires "apiKey" in models.json.');
+		expect(analysis.models).toEqual([]);
+		expect(analysis.overrides.size).toBe(0);
+		expect(analysis.providerRequestConfigs.get("openai")).toEqual({
+			apiKey: undefined,
+			headers: undefined,
+			authHeader: true,
+		});
 	});
 
 	test("analyzeModelsConfig keeps existing override-only provider overlays valid", () => {
