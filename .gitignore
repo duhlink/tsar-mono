@@ -40,3 +40,5 @@ plans/
 .tsar/logs/
 .tsar/session.lock
 workflow/delegation-tree.json
+
+.tsar/qa-observatory/
