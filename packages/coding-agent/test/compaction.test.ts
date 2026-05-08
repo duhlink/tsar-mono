@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@tsar/agent-core";
-import type { AssistantMessage, ImageContent, Usage } from "@tsar/ai";
+import type { AssistantMessage, ImageContent, ToolResultMessage, Usage } from "@tsar/ai";
 import { getModel } from "@tsar/ai";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -65,6 +65,30 @@ function createAssistantMessage(text: string, usage?: Usage): AssistantMessage {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
+	};
+}
+
+function createAssistantToolCallMessage(toolCallId: string, usage?: Usage): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "tail.txt" } }],
+		usage: usage || createMockUsage(100, 50),
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+	};
+}
+
+function createToolResultMessage(text: string, toolCallId = "tool-1"): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "read",
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: Date.now(),
 	};
 }
 
@@ -368,6 +392,44 @@ describe("findCutPoint", () => {
 		expect(result.isSplitTurn).toBe(false);
 		expect((entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role).toBe("user");
 		expect(result.firstKeptEntryIndex % 2).toBe(0);
+	});
+
+	it("should fall back to the preceding user cut point for a trailing oversized tool result when assistant cut points are disabled", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Turn 1")),
+			createMessageEntry(createAssistantMessage("A1", createMockUsage(0, 100, 1000, 0))),
+			createMessageEntry(createUserMessage("Retry user")),
+			createMessageEntry(createAssistantToolCallMessage("tool-1", createMockUsage(0, 100, 1000, 0))),
+			createMessageEntry(createToolResultMessage("tail ".repeat(5000))),
+		];
+
+		const result = findCutPoint(entries, 0, entries.length, 1000, {
+			allowAssistantCutPoints: false,
+		});
+
+		expect(result.firstKeptEntryIndex).toBe(2);
+		expect(result.isSplitTurn).toBe(false);
+		expect(result.turnStartIndex).toBe(-1);
+		expect((entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role).toBe("user");
+	});
+
+	it("should fall back to the assistant tool-call cut point and mark a split turn for a trailing oversized tool result", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("Turn 1")),
+			createMessageEntry(createAssistantMessage("A1", createMockUsage(0, 100, 1000, 0))),
+			createMessageEntry(createUserMessage("Retry user")),
+			createMessageEntry(createAssistantToolCallMessage("tool-1", createMockUsage(0, 100, 1000, 0))),
+			createMessageEntry(createToolResultMessage("tail ".repeat(5000))),
+		];
+
+		const result = findCutPoint(entries, 0, entries.length, 1000, {
+			allowAssistantCutPoints: true,
+		});
+
+		expect(result.firstKeptEntryIndex).toBe(3);
+		expect(result.isSplitTurn).toBe(true);
+		expect(result.turnStartIndex).toBe(2);
+		expect((entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role).toBe("assistant");
 	});
 });
 
