@@ -128,6 +128,8 @@ export function convertResponsesMessages<TApi extends Api>(
 	}
 
 	let msgIndex = 0;
+	const seenItemIds = new Set<string>();
+	const deduplicatedCallIds = new Set<string>();
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
 			if (typeof msg.content === "string") {
@@ -171,6 +173,10 @@ export function convertResponsesMessages<TApi extends Api>(
 					if (block.thinkingSignature) {
 						try {
 							const reasoningItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
+							if (typeof reasoningItem.id === "string") {
+								if (seenItemIds.has(reasoningItem.id)) continue;
+								seenItemIds.add(reasoningItem.id);
+							}
 							output.push(reasoningItem);
 						} catch {
 							// Corrupted/truncated thinkingSignature — drop the block.
@@ -186,6 +192,9 @@ export function convertResponsesMessages<TApi extends Api>(
 					} else if (msgId.length > 64) {
 						msgId = `msg_${shortHash(msgId)}`;
 					}
+					// Deduplicate by msg ID
+					if (seenItemIds.has(msgId)) continue;
+					seenItemIds.add(msgId);
 					output.push({
 						type: "message",
 						role: "assistant",
@@ -206,13 +215,22 @@ export function convertResponsesMessages<TApi extends Api>(
 						itemId = undefined;
 					}
 
-					output.push({
+					const fcObj: ResponseFunctionToolCall = {
 						type: "function_call",
 						id: itemId,
 						call_id: callId,
 						name: toolCall.name,
 						arguments: JSON.stringify(toolCall.arguments),
-					});
+					};
+					// Deduplicate by fc_ id when present; items without id are always pushed
+					if (fcObj.id !== undefined) {
+						if (seenItemIds.has(fcObj.id)) {
+							deduplicatedCallIds.add(callId);
+							continue;
+						}
+						seenItemIds.add(fcObj.id);
+					}
+					output.push(fcObj);
 				}
 			}
 			if (output.length === 0) continue;
@@ -225,6 +243,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			const hasImages = msg.content.some((c): c is ImageContent => c.type === "image");
 			const hasText = textResult.length > 0;
 			const [callId] = msg.toolCallId.split("|");
+			if (deduplicatedCallIds.has(callId)) continue;
 
 			let output: string | ResponseFunctionCallOutputItemList;
 			if (hasImages && model.input.includes("image")) {
