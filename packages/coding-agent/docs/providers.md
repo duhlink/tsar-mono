@@ -144,7 +144,7 @@ export AWS_REGION=us-west-2
 Also supports ECS task roles (`AWS_CONTAINER_CREDENTIALS_*`) and IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE`).
 
 ```bash
-tsar --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-20250514-v1:0
+tsar --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
 Prompt caching is enabled automatically for Claude models whose ID contains a recognizable model name (base models and system-defined inference profiles). For application inference profiles (whose ARNs don't contain the model name), set `AWS_BEDROCK_FORCE_CACHE=1` to enable cache points:

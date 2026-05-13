@@ -32,13 +32,7 @@ import { hasBedrockCredentials } from "./bedrock-utils.js";
 // =============================================================================
 
 /** Models that require inference profile ARN (not available on-demand in us-east-1) */
-const REQUIRES_INFERENCE_PROFILE = new Set([
-	"anthropic.claude-3-5-haiku-20241022-v1:0",
-	"anthropic.claude-3-5-sonnet-20241022-v2:0",
-	"anthropic.claude-3-opus-20240229-v1:0",
-	"meta.llama3-1-70b-instruct-v1:0",
-	"meta.llama3-1-8b-instruct-v1:0",
-]);
+const REQUIRES_INFERENCE_PROFILE = new Set(["meta.llama3-1-70b-instruct-v1:0", "meta.llama3-1-8b-instruct-v1:0"]);
 
 /** Models with invalid identifiers (not available in us-east-1 or don't exist) */
 const INVALID_MODEL_ID = new Set([
@@ -64,7 +58,6 @@ const NO_REASONING_IN_USER_MESSAGES = new Set([
 	// Mistral models
 	"mistral.ministral-3-14b-instruct",
 	"mistral.ministral-3-8b-instruct",
-	"mistral.mistral-large-2402-v1:0",
 	"mistral.voxtral-mini-3b-2507",
 	"mistral.voxtral-small-24b-2507",
 	// Nvidia models
@@ -72,32 +65,14 @@ const NO_REASONING_IN_USER_MESSAGES = new Set([
 	"nvidia.nemotron-nano-9b-v2",
 	// Qwen models
 	"qwen.qwen3-coder-30b-a3b-v1:0",
-	// Amazon Nova models
-	"us.amazon.nova-lite-v1:0",
-	"us.amazon.nova-micro-v1:0",
-	"us.amazon.nova-premier-v1:0",
-	"us.amazon.nova-pro-v1:0",
-	// Meta Llama models
-	"us.meta.llama3-2-11b-instruct-v1:0",
-	"us.meta.llama3-2-1b-instruct-v1:0",
-	"us.meta.llama3-2-3b-instruct-v1:0",
-	"us.meta.llama3-2-90b-instruct-v1:0",
-	"us.meta.llama3-3-70b-instruct-v1:0",
 	// DeepSeek
 	"us.deepseek.r1-v1:0",
 	// Older Anthropic models
-	"anthropic.claude-3-5-sonnet-20240620-v1:0",
-	"anthropic.claude-3-haiku-20240307-v1:0",
-	"anthropic.claude-3-sonnet-20240229-v1:0",
-	// Cohere models
-	"cohere.command-r-plus-v1:0",
-	"cohere.command-r-v1:0",
 	// Google models
 	"google.gemma-3-27b-it",
 	"google.gemma-3-4b-it",
 	// Non-Anthropic models that don't support signatures (now handled by omitting signature)
 	// but still reject reasoning content in user messages
-	"global.amazon.nova-2-lite-v1:0",
 	"minimax.minimax-m2",
 	"moonshot.kimi-k2-thinking",
 	"openai.gpt-oss-120b-1:0",
@@ -116,11 +91,8 @@ const NO_REASONING_IN_USER_MESSAGES = new Set([
 const VALIDATES_SIGNATURE_FORMAT = new Set([
 	"global.anthropic.claude-haiku-4-5-20251001-v1:0",
 	"global.anthropic.claude-opus-4-5-20251101-v1:0",
-	"global.anthropic.claude-sonnet-4-20250514-v1:0",
 	"global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-	"us.anthropic.claude-3-7-sonnet-20250219-v1:0",
 	"us.anthropic.claude-opus-4-1-20250805-v1:0",
-	"us.anthropic.claude-opus-4-20250514-v1:0",
 ]);
 
 /**
