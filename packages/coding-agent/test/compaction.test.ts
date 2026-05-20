@@ -3,7 +3,7 @@ import type { AssistantMessage, ImageContent, ToolResultMessage, Usage } from "@
 import { getModel } from "@tsar/ai";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionSettings,
 	calculateContextTokens,
@@ -317,6 +317,116 @@ describe("shouldCompact", () => {
 });
 
 describe("findCutPoint", () => {
+	it("should not log normal cut decisions as errors", () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const entries: SessionEntry[] = Array.from({ length: 10 }, () =>
+				createMessageEntry(createUserMessage("x".repeat(1000))),
+			);
+
+			const result = findCutPoint(entries, 0, entries.length, 1250);
+
+			expect(result.firstKeptEntryIndex).toBe(5);
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(warnSpy).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("should warn with structured details for aggressive cuts", () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const entries: SessionEntry[] = Array.from({ length: 10 }, () =>
+				createMessageEntry(createUserMessage("x".repeat(1000))),
+			);
+
+			const result = findCutPoint(entries, 0, entries.length, 250);
+
+			expect(result.firstKeptEntryIndex).toBe(9);
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("aggressive"),
+				expect.objectContaining({
+					cutCount: 9,
+					totalEntries: 10,
+					keptCount: 1,
+					accumulatedTokens: 250,
+					keepRecent: 250,
+					cutIndex: 9,
+					cutPoints: 10,
+				}),
+			);
+		} finally {
+			errorSpy.mockRestore();
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("should warn with structured details for low and ineffective cuts", () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const entries: SessionEntry[] = Array.from({ length: 20 }, () =>
+				createMessageEntry(createUserMessage("x".repeat(1000))),
+			);
+
+			const result = findCutPoint(entries, 0, entries.length, 4750);
+
+			expect(result.firstKeptEntryIndex).toBe(1);
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("low"),
+				expect.objectContaining({
+					cutCount: 1,
+					totalEntries: 20,
+					keptCount: 19,
+					accumulatedTokens: 4750,
+					keepRecent: 4750,
+					cutIndex: 1,
+					cutPoints: 20,
+				}),
+			);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("ineffective"),
+				expect.objectContaining({
+					cutCount: 1,
+					totalEntries: 20,
+					keptCount: 19,
+					accumulatedTokens: 4750,
+					keepRecent: 4750,
+					cutIndex: 1,
+					cutPoints: 20,
+				}),
+			);
+		} finally {
+			errorSpy.mockRestore();
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("should not log an error when the entire range fits within keepRecentTokens", () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const entries: SessionEntry[] = [
+				createMessageEntry(createUserMessage("Hello")),
+				createMessageEntry(createAssistantMessage("Hi")),
+				createMessageEntry(createUserMessage("How are you?")),
+				createMessageEntry(createAssistantMessage("Good")),
+			];
+
+			const result = findCutPoint(entries, 0, entries.length, 50000);
+
+			expect(result.firstKeptEntryIndex).toBe(0);
+			expect(errorSpy).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("should find cut point based on actual token differences", () => {
 		// Create entries with cumulative token counts
 		const entries: SessionEntry[] = [];

@@ -126,6 +126,22 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 
 /** Threshold above which a cut is considered ineffective (kept > 70% of entries). */
 const INEFFECTIVE_CUT_THRESHOLD = 0.7;
+/** Cut percentage above which a cut is unusually aggressive and worth warning about. */
+const AGGRESSIVE_CUT_THRESHOLD_PERCENT = 80;
+/** Cut percentage below which a cut is too small to be useful and worth warning about. */
+const LOW_CUT_THRESHOLD_PERCENT = 10;
+
+interface CutPointLogDetails {
+	cutCount: number;
+	totalEntries: number;
+	keptCount: number;
+	cutPct: number;
+	keptPct: number;
+	accumulatedTokens: number;
+	keepRecent: number;
+	cutIndex: number;
+	cutPoints: number;
+}
 
 // ============================================================================
 // Token calculation
@@ -526,29 +542,41 @@ export function findCutPoint(
 	const isTurnStart = isTurnStartEntry(cutEntry);
 	const turnStartIndex = isTurnStart ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
 
-	if (accumulatedTokens < keepRecentTokens) {
-		console.error(
-			`[compaction-debug] findCutPoint: total=${accumulatedTokens} < keepRecent=${keepRecentTokens}, ` +
-				`range=[${startIndex},${endIndex}) entries=${endIndex - startIndex} cutPoints=${cutPoints.length} ` +
-				`cutIndex=${cutIndex} (defaulted to cutPoints[0]=${cutPoints[0]}). ` +
-				`Context has non-message entries (custom_message, branch_summary) contributing tokens ` +
-				`that were not counted — compaction will not reduce payload.`,
-		);
-	}
-
-	// Instrumentation: always log final cut decision
+	// Instrumentation: always log final cut decision without escalating expected decisions to errors.
 	const totalEntries = endIndex - startIndex;
 	const cutCount = cutIndex - startIndex;
 	const keptCount = totalEntries - cutCount;
-	const cutPct = totalEntries > 0 ? ((cutCount / totalEntries) * 100).toFixed(0) : "0";
-	console.error(
-		`[compaction] findCutPoint result: cut ${cutCount}/${totalEntries} entries (${cutPct}%), kept ${keptCount} entries, accumulatedTokens=${accumulatedTokens}, keepRecent=${keepRecentTokens}, cutIndex=${cutIndex}`,
-	);
+	const cutPct = totalEntries > 0 ? (cutCount / totalEntries) * 100 : 0;
+	const keptPct = totalEntries > 0 ? (keptCount / totalEntries) * 100 : 0;
+	const logDetails: CutPointLogDetails = {
+		cutCount,
+		totalEntries,
+		keptCount,
+		cutPct,
+		keptPct,
+		accumulatedTokens,
+		keepRecent: keepRecentTokens,
+		cutIndex,
+		cutPoints: cutPoints.length,
+	};
+
+	if (accumulatedTokens < keepRecentTokens) {
+		console.debug("[compaction-debug] findCutPoint range fits within keepRecent budget", {
+			...logDetails,
+			startIndex,
+			endIndex,
+		});
+	}
+
+	console.debug("[compaction] findCutPoint result", logDetails);
+	if (totalEntries > 0 && cutPct > AGGRESSIVE_CUT_THRESHOLD_PERCENT) {
+		console.warn("[compaction] findCutPoint WARNING: aggressive cut", logDetails);
+	}
+	if (totalEntries > 0 && cutPct < LOW_CUT_THRESHOLD_PERCENT) {
+		console.warn("[compaction] findCutPoint WARNING: low cut", logDetails);
+	}
 	if (keptCount > totalEntries * INEFFECTIVE_CUT_THRESHOLD && totalEntries > 0) {
-		console.warn(
-			`[compaction] findCutPoint WARNING: kept ${keptCount}/${totalEntries} entries (${((keptCount / totalEntries) * 100).toFixed(0)}%) — cut is ineffective. ` +
-				`accumulatedTokens=${accumulatedTokens}, keepRecent=${keepRecentTokens}, cutIndex=${cutIndex}, cutPoints=${cutPoints.length}`,
-		);
+		console.warn("[compaction] findCutPoint WARNING: cut is ineffective", logDetails);
 	}
 
 	return {
