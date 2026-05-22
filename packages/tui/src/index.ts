@@ -16,6 +16,12 @@ export {
 	type SlashCommand,
 } from "./autocomplete.js";
 // Components
+export {
+	ActionableMarkdown,
+	type ActionableMarkdownDiagnostic,
+	type ActionableMarkdownOptions,
+	type ActionableMarkdownParser,
+} from "./components/actionable-markdown.js";
 export { Box } from "./components/box.js";
 export { CancellableLoader } from "./components/cancellable-loader.js";
 export { Editor, type EditorOptions, type EditorTheme } from "./components/editor.js";
