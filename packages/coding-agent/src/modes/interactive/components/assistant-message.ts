@@ -10,11 +10,17 @@ import {
 	Spacer,
 	Text,
 } from "@tsar/tui";
+import {
+	type ActionableMarkdownActionRegistry,
+	withActionableMarkdownActionHints,
+} from "../../../core/actionable-markdown-actions.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 export interface AssistantMessageComponentOptions {
 	actionableMarkdown?: boolean;
 	actionableMarkdownOptions?: ActionableMarkdownOptions;
+	actionRegistry?: ActionableMarkdownActionRegistry;
+	actionSource?: string;
 }
 
 /**
@@ -26,6 +32,9 @@ export class AssistantMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private actionableMarkdown: boolean;
 	private actionableMarkdownOptions?: ActionableMarkdownOptions;
+	private actionRegistry?: ActionableMarkdownActionRegistry;
+	private actionSource?: string;
+	private markdownActionSources = new Set<string>();
 	private lastMessage?: AssistantMessage;
 
 	constructor(
@@ -40,6 +49,8 @@ export class AssistantMessageComponent extends Container {
 		this.markdownTheme = markdownTheme;
 		this.actionableMarkdown = options.actionableMarkdown === true;
 		this.actionableMarkdownOptions = options.actionableMarkdownOptions;
+		this.actionRegistry = options.actionRegistry;
+		this.actionSource = options.actionSource;
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
@@ -75,13 +86,19 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(new Spacer(1));
 		}
 
+		const nextActionSources = new Set<string>();
+
 		// Render content in order
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.contentContainer.addChild(this.createMarkdown(content.text.trim(), 1, 0));
+				const actionSourceId = this.getContentActionSourceId(i);
+				if (actionSourceId !== undefined) {
+					nextActionSources.add(actionSourceId);
+				}
+				this.contentContainer.addChild(this.createMarkdown(content.text.trim(), 1, 0, undefined, actionSourceId));
 			} else if (content.type === "thinking" && content.thinking.trim()) {
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
@@ -97,11 +114,21 @@ export class AssistantMessageComponent extends Container {
 					}
 				} else {
 					// Thinking traces in thinkingText color, italic
+					const actionSourceId = this.getContentActionSourceId(i);
+					if (actionSourceId !== undefined) {
+						nextActionSources.add(actionSourceId);
+					}
 					this.contentContainer.addChild(
-						this.createMarkdown(content.thinking.trim(), 1, 0, {
-							color: (text: string) => theme.fg("thinkingText", text),
-							italic: true,
-						}),
+						this.createMarkdown(
+							content.thinking.trim(),
+							1,
+							0,
+							{
+								color: (text: string) => theme.fg("thinkingText", text),
+								italic: true,
+							},
+							actionSourceId,
+						),
 					);
 					if (hasVisibleContentAfter) {
 						this.contentContainer.addChild(new Spacer(1));
@@ -109,6 +136,8 @@ export class AssistantMessageComponent extends Container {
 				}
 			}
 		}
+
+		this.clearUnusedActionSources(nextActionSources);
 
 		// Check if aborted - show after partial content
 		// But only if there are no tool calls (tool execution components will show the error)
@@ -138,6 +167,7 @@ export class AssistantMessageComponent extends Container {
 		paddingX: number,
 		paddingY: number,
 		defaultTextStyle?: DefaultTextStyle,
+		actionSourceId?: string,
 	): Component {
 		if (this.actionableMarkdown) {
 			return new ActionableMarkdown(
@@ -146,10 +176,35 @@ export class AssistantMessageComponent extends Container {
 				paddingY,
 				this.markdownTheme,
 				defaultTextStyle,
-				this.actionableMarkdownOptions,
+				withActionableMarkdownActionHints(this.actionableMarkdownOptions, this.actionRegistry, actionSourceId),
 			);
 		}
 
 		return new Markdown(text, paddingX, paddingY, this.markdownTheme, defaultTextStyle);
+	}
+
+	private getContentActionSourceId(contentIndex: number): string | undefined {
+		if (
+			!this.actionableMarkdown ||
+			this.actionRegistry === undefined ||
+			this.actionSource === undefined ||
+			this.actionSource.trim().length === 0
+		) {
+			return undefined;
+		}
+
+		return `${this.actionSource}:assistant:${contentIndex}`;
+	}
+
+	private clearUnusedActionSources(nextActionSources: Set<string>): void {
+		if (this.actionRegistry !== undefined) {
+			for (const sourceId of this.markdownActionSources) {
+				if (!nextActionSources.has(sourceId)) {
+					this.actionRegistry.clearSource(sourceId);
+				}
+			}
+		}
+
+		this.markdownActionSources = nextActionSources;
 	}
 }
