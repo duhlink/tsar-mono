@@ -1,6 +1,21 @@
 import type { AssistantMessage } from "@tsar/ai";
-import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@tsar/tui";
+import {
+	ActionableMarkdown,
+	type ActionableMarkdownOptions,
+	type Component,
+	Container,
+	type DefaultTextStyle,
+	Markdown,
+	type MarkdownTheme,
+	Spacer,
+	Text,
+} from "@tsar/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+
+export interface AssistantMessageComponentOptions {
+	actionableMarkdown?: boolean;
+	actionableMarkdownOptions?: ActionableMarkdownOptions;
+}
 
 /**
  * Component that renders a complete assistant message
@@ -9,17 +24,22 @@ export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private hideThinkingBlock: boolean;
 	private markdownTheme: MarkdownTheme;
+	private actionableMarkdown: boolean;
+	private actionableMarkdownOptions?: ActionableMarkdownOptions;
 	private lastMessage?: AssistantMessage;
 
 	constructor(
 		message?: AssistantMessage,
 		hideThinkingBlock = false,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
+		options: AssistantMessageComponentOptions = {},
 	) {
 		super();
 
 		this.hideThinkingBlock = hideThinkingBlock;
 		this.markdownTheme = markdownTheme;
+		this.actionableMarkdown = options.actionableMarkdown === true;
+		this.actionableMarkdownOptions = options.actionableMarkdownOptions;
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
@@ -61,7 +81,7 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && content.text.trim()) {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, this.markdownTheme));
+				this.contentContainer.addChild(this.createMarkdown(content.text.trim(), 1, 0));
 			} else if (content.type === "thinking" && content.thinking.trim()) {
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
@@ -78,7 +98,7 @@ export class AssistantMessageComponent extends Container {
 				} else {
 					// Thinking traces in thinkingText color, italic
 					this.contentContainer.addChild(
-						new Markdown(content.thinking.trim(), 1, 0, this.markdownTheme, {
+						this.createMarkdown(content.thinking.trim(), 1, 0, {
 							color: (text: string) => theme.fg("thinkingText", text),
 							italic: true,
 						}),
@@ -111,5 +131,25 @@ export class AssistantMessageComponent extends Container {
 				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), 1, 0));
 			}
 		}
+	}
+
+	private createMarkdown(
+		text: string,
+		paddingX: number,
+		paddingY: number,
+		defaultTextStyle?: DefaultTextStyle,
+	): Component {
+		if (this.actionableMarkdown) {
+			return new ActionableMarkdown(
+				text,
+				paddingX,
+				paddingY,
+				this.markdownTheme,
+				defaultTextStyle,
+				this.actionableMarkdownOptions,
+			);
+		}
+
+		return new Markdown(text, paddingX, paddingY, this.markdownTheme, defaultTextStyle);
 	}
 }

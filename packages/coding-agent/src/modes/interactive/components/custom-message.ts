@@ -1,9 +1,14 @@
 import type { TextContent } from "@tsar/ai";
-import type { Component } from "@tsar/tui";
-import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@tsar/tui";
+import type { ActionableMarkdownOptions, Component, DefaultTextStyle } from "@tsar/tui";
+import { ActionableMarkdown, Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@tsar/tui";
 import type { MessageRenderer } from "../../../core/extensions/types.js";
 import type { CustomMessage } from "../../../core/messages.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+
+export interface CustomMessageComponentOptions {
+	actionableMarkdown?: boolean;
+	actionableMarkdownOptions?: ActionableMarkdownOptions;
+}
 
 /**
  * Component that renders a custom message entry from extensions.
@@ -15,17 +20,22 @@ export class CustomMessageComponent extends Container {
 	private box: Box;
 	private customComponent?: Component;
 	private markdownTheme: MarkdownTheme;
+	private actionableMarkdown: boolean;
+	private actionableMarkdownOptions?: ActionableMarkdownOptions;
 	private _expanded = false;
 
 	constructor(
 		message: CustomMessage<unknown>,
 		customRenderer?: MessageRenderer,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
+		options: CustomMessageComponentOptions = {},
 	) {
 		super();
 		this.message = message;
 		this.customRenderer = customRenderer;
 		this.markdownTheme = markdownTheme;
+		this.actionableMarkdown = options.actionableMarkdown === true;
+		this.actionableMarkdownOptions = options.actionableMarkdownOptions;
 
 		this.addChild(new Spacer(1));
 
@@ -91,9 +101,29 @@ export class CustomMessageComponent extends Container {
 		}
 
 		this.box.addChild(
-			new Markdown(text, 0, 0, this.markdownTheme, {
+			this.createMarkdown(text, 0, 0, {
 				color: (text: string) => theme.fg("customMessageText", text),
 			}),
 		);
+	}
+
+	private createMarkdown(
+		text: string,
+		paddingX: number,
+		paddingY: number,
+		defaultTextStyle?: DefaultTextStyle,
+	): Component {
+		if (this.actionableMarkdown) {
+			return new ActionableMarkdown(
+				text,
+				paddingX,
+				paddingY,
+				this.markdownTheme,
+				defaultTextStyle,
+				this.actionableMarkdownOptions,
+			);
+		}
+
+		return new Markdown(text, paddingX, paddingY, this.markdownTheme, defaultTextStyle);
 	}
 }
