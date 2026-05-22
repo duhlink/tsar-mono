@@ -21,6 +21,9 @@ export {
 	type ActionableMarkdownDiagnostic,
 	type ActionableMarkdownOptions,
 	type ActionableMarkdownParser,
+	type ActionableMarkdownRenderActionHints,
+	type ActionableMarkdownRenderActionHintsContext,
+	type ActionableMarkdownRenderHintInsertion,
 } from "./components/actionable-markdown.js";
 export { Box } from "./components/box.js";
 export { CancellableLoader } from "./components/cancellable-loader.js";

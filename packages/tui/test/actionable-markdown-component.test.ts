@@ -16,6 +16,18 @@ function assertMarkdownParity(text: string, width: number, paddingX = 1, padding
 	assert.deepStrictEqual(actionable.render(width), markdown.render(width));
 }
 
+function assertActionableRendersMarkdown(
+	actionable: ActionableMarkdown,
+	markdownText: string,
+	width: number,
+	paddingX = 0,
+	paddingY = 0,
+): void {
+	const markdown = new Markdown(markdownText, paddingX, paddingY, defaultMarkdownTheme);
+
+	assert.deepStrictEqual(actionable.render(width), markdown.render(width));
+}
+
 describe("ActionableMarkdown component", () => {
 	it("implements Component and preserves ordinary Markdown rendering", () => {
 		const text = "# Heading\n\nThis has **bold**, `code`, and [a link](https://example.com).";
@@ -174,5 +186,147 @@ describe("ActionableMarkdown component", () => {
 				type: "parse-error",
 			},
 		]);
+	});
+
+	it("preserves exact Markdown parity when the render hint hook is absent", () => {
+		const samples = [
+			"# Heading\n\nRegular **markdown** with `inline code`.",
+			["Run:", "", "```bash", "$ npm install", "```"].join("\n"),
+			"",
+			"   \n\t  ",
+		];
+
+		for (const sample of samples) {
+			for (const width of [24, 72]) {
+				assertMarkdownParity(sample, width, 1, 1);
+			}
+		}
+
+		const actionable = new ActionableMarkdown("initial", 0, 0, defaultMarkdownTheme);
+		const markdown = new Markdown("initial", 0, 0, defaultMarkdownTheme);
+		actionable.setText("updated\n\n```ts\nconst value = 1;\n```");
+		markdown.setText("updated\n\n```ts\nconst value = 1;\n```");
+		assert.deepStrictEqual(actionable.render(32), markdown.render(32));
+		actionable.invalidate();
+		markdown.invalidate();
+		assert.deepStrictEqual(actionable.render(64), markdown.render(64));
+	});
+
+	it("renders hook insertions before the first line, after code blocks, and after the end", () => {
+		const text = ["Intro", "", "```bash", "$ npm install", "```", "Outro"].join("\n");
+		const actionable = new ActionableMarkdown(text, 0, 0, defaultMarkdownTheme, undefined, {
+			renderActionHints: ({ parseResult }) => [
+				{ afterLine: 0, lines: ["Before first"] },
+				{ afterLine: parseResult.codeBlocks[0]?.endLine ?? 0, lines: ["After code block"] },
+				{ afterLine: 999, lines: ["After end"] },
+			],
+		});
+		const expected = [
+			"Before first",
+			"Intro",
+			"",
+			"```bash",
+			"$ npm install",
+			"```",
+			"After code block",
+			"Outro",
+			"After end",
+		].join("\n");
+
+		assertActionableRendersMarkdown(actionable, expected, 80);
+		assert.deepStrictEqual(actionable.getDiagnostics(), []);
+	});
+
+	it("clamps insertion lines and preserves deterministic order for insertions on the same line", () => {
+		const actionable = new ActionableMarkdown("alpha\nbeta", 0, 0, defaultMarkdownTheme, undefined, {
+			renderActionHints: () => [
+				{ afterLine: -10, lines: ["start one"] },
+				{ afterLine: 0, lines: ["start two"] },
+				{ afterLine: 1, lines: ["after alpha one"] },
+				{ afterLine: 1, lines: ["after alpha two"] },
+				{ afterLine: 999, lines: ["end one"] },
+				{ afterLine: 2, lines: ["end two"] },
+			],
+		});
+		const expected = [
+			"start one",
+			"start two",
+			"alpha",
+			"after alpha one",
+			"after alpha two",
+			"beta",
+			"end one",
+			"end two",
+		].join("\n");
+
+		assertActionableRendersMarkdown(actionable, expected, 80);
+	});
+
+	it("falls back to plain Markdown and records render hook diagnostics for hook failures", () => {
+		const text = "Keep the transcript visible.";
+		const throwing = new ActionableMarkdown(text, 0, 0, defaultMarkdownTheme, undefined, {
+			renderActionHints: () => {
+				throw new Error("hook exploded");
+			},
+		});
+		const plain = new Markdown(text, 0, 0, defaultMarkdownTheme);
+
+		assert.deepStrictEqual(throwing.render(80), plain.render(80));
+		assert.deepStrictEqual(throwing.getDiagnostics(), [
+			{
+				message: "hook exploded",
+				type: "render-hook-error",
+			},
+		]);
+
+		const invalidAfterLine = new ActionableMarkdown(text, 0, 0, defaultMarkdownTheme, undefined, {
+			renderActionHints: () => [{ afterLine: 1.5, lines: ["bad hint"] }],
+		});
+
+		assert.deepStrictEqual(invalidAfterLine.render(80), plain.render(80));
+		const diagnostics = invalidAfterLine.getDiagnostics();
+		assert.strictEqual(diagnostics.length, 1);
+		assert.strictEqual(diagnostics[0]?.type, "render-hook-error");
+		assert.match(diagnostics[0]?.message ?? "", /non-integer afterLine/);
+	});
+
+	it("passes defensive parse metadata copies to the render hook", () => {
+		const text = ["Read packages/tui/src/index.ts.", "", "```bash", "$ npm install", "```"].join("\n");
+		const actionable = new ActionableMarkdown(text, 0, 0, defaultMarkdownTheme, undefined, {
+			renderActionHints: (context) => {
+				assert.strictEqual(context.markdown, text);
+				context.parseResult.paths.push("mutated/path.ts");
+				context.parseResult.codeBlocks[0]?.shellSteps.push({
+					copyText: "mutated command",
+					startLine: 99,
+					endLine: 99,
+				});
+				return [{ afterLine: 0, lines: ["Hint"] }];
+			},
+		});
+
+		assertActionableRendersMarkdown(actionable, ["Hint", text].join("\n"), 80);
+		assert.deepStrictEqual(actionable.getPaths(), ["packages/tui/src/index.ts"]);
+		assert.deepStrictEqual(
+			actionable.getActionableParseResult().codeBlocks[0]?.shellSteps.map((step) => step.copyText),
+			["npm install"],
+		);
+	});
+
+	it("refreshes augmented rendering after setText and invalidate without stale hint lines", () => {
+		let hint = "first hint";
+		const actionable = new ActionableMarkdown("first", 0, 0, defaultMarkdownTheme, undefined, {
+			renderActionHints: (context) => [{ afterLine: 1, lines: [`${hint} for ${context.markdown}`] }],
+		});
+
+		assertActionableRendersMarkdown(actionable, "first\nfirst hint for first", 80);
+
+		hint = "second hint";
+		actionable.setText("second");
+		assertActionableRendersMarkdown(actionable, "second\nsecond hint for second", 80);
+
+		hint = "third hint";
+		actionable.invalidate();
+		assertActionableRendersMarkdown(actionable, "second\nthird hint for second", 80);
 	});
 });
