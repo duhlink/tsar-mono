@@ -29,6 +29,21 @@ type ActionCommandContext = {
 	showWarning: ReturnType<typeof vi.fn>;
 };
 
+type SubmitActionCommandContext = ActionCommandContext & {
+	defaultEditor: { onSubmit?: (text: string) => Promise<void> };
+	editor: {
+		setText: ReturnType<typeof vi.fn>;
+		addToHistory: ReturnType<typeof vi.fn>;
+	};
+	session: {
+		prompt: ReturnType<typeof vi.fn>;
+		isBashRunning: boolean;
+		isCompacting: boolean;
+		isStreaming: boolean;
+	};
+	handleActionCommand: (text: string) => Promise<void>;
+};
+
 const handleActionCommand = Reflect.get(InteractiveMode.prototype, "handleActionCommand") as (
 	this: ActionCommandContext,
 	text: string,
@@ -37,7 +52,7 @@ const handleActionCommand = Reflect.get(InteractiveMode.prototype, "handleAction
 const setupEditorSubmitHandler = Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler") as (this: {
 	defaultEditor: { onSubmit?: (text: string) => Promise<void> };
 	editor: { setText: ReturnType<typeof vi.fn> };
-	handleActionCommand: ReturnType<typeof vi.fn>;
+	handleActionCommand: (text: string) => Promise<void>;
 }) => void;
 
 function descriptor(
@@ -84,6 +99,27 @@ function createActionContext(
 		"pasteActionPayload",
 		"resolveLocalActionPath",
 	]);
+	return context;
+}
+
+function createSubmitActionContext(
+	options: { enabled?: boolean; openPath?: ReturnType<typeof vi.fn> } = {},
+): SubmitActionCommandContext {
+	const context: SubmitActionCommandContext = {
+		...createActionContext(options),
+		defaultEditor: {},
+		editor: { setText: vi.fn(), addToHistory: vi.fn() },
+		session: {
+			prompt: vi.fn().mockResolvedValue(undefined),
+			isBashRunning: false,
+			isCompacting: false,
+			isStreaming: false,
+		},
+		handleActionCommand: async () => undefined,
+	};
+	context.handleActionCommand = async (text: string) => {
+		await handleActionCommand.call(context, text);
+	};
 	return context;
 }
 
@@ -135,10 +171,12 @@ describe("InteractiveMode actionable Markdown settings", () => {
 			defaultEditor: { onSubmit?: (text: string) => Promise<void> };
 			editor: { setText: ReturnType<typeof vi.fn> };
 			handleActionCommand: ReturnType<typeof vi.fn>;
+			session: { prompt: ReturnType<typeof vi.fn> };
 		} = {
 			defaultEditor: {},
 			editor: { setText: vi.fn() },
 			handleActionCommand: vi.fn().mockResolvedValue(undefined),
+			session: { prompt: vi.fn() },
 		};
 
 		setupEditorSubmitHandler.call(context);
@@ -146,6 +184,37 @@ describe("InteractiveMode actionable Markdown settings", () => {
 
 		expect(context.editor.setText).toHaveBeenCalledWith("");
 		expect(context.handleActionCommand).toHaveBeenCalledWith("/action 7 copy block");
+		expect(context.session.prompt).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		["tab", "\t"],
+		["newline", "\n"],
+	])("intercepts valid /action command with %s whitespace", async (_name, separator) => {
+		const context = createSubmitActionContext();
+		const id = registerSingleAction(context, descriptor("copy-code-block", "copy block", "echo robust action"));
+
+		setupEditorSubmitHandler.call(context);
+		await context.defaultEditor.onSubmit?.(`/action${separator}${id} copy block`);
+
+		expect(context.editor.setText).toHaveBeenCalledWith("");
+		expect(context.actionServices.copyToClipboard).toHaveBeenCalledWith("echo robust action");
+		expect(context.session.prompt).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		["tab malformed id", "/action\tnope"],
+		["newline missing id", "/action\n"],
+	])("intercepts invalid /action command with %s", async (_name, text) => {
+		const context = createSubmitActionContext();
+
+		setupEditorSubmitHandler.call(context);
+		await context.defaultEditor.onSubmit?.(text);
+
+		expect(context.editor.setText).toHaveBeenCalledWith("");
+		expect(context.showError).toHaveBeenCalledWith("Usage: /action <id>");
+		expect(context.actionServices.copyToClipboard).not.toHaveBeenCalled();
+		expect(context.session.prompt).not.toHaveBeenCalled();
 	});
 });
 

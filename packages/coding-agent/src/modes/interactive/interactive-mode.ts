@@ -141,6 +141,12 @@ function formatActionPayloadLabel(payload: string): string {
 	return `${singleLine.slice(0, 77)}…`;
 }
 
+const ACTION_COMMAND_PATTERN = /^\/action(?:\s|$)/u;
+
+function isActionCommandText(text: string): boolean {
+	return ACTION_COMMAND_PATTERN.test(text);
+}
+
 type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
@@ -2128,7 +2134,7 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
-			if (text === "/action" || text.startsWith("/action ")) {
+			if (isActionCommandText(text)) {
 				this.editor.setText("");
 				await this.handleActionCommand(text);
 				return;
@@ -2320,8 +2326,13 @@ export class InteractiveMode {
 	}
 
 	private parseActionCommandId(text: string): number | undefined {
-		const parts = text.trim().split(/\s+/u);
-		if (parts[0] !== "/action" || parts[1] === undefined || !/^\d+$/u.test(parts[1])) {
+		const trimmedText = text.trim();
+		if (!isActionCommandText(trimmedText)) {
+			return undefined;
+		}
+
+		const parts = trimmedText.split(/\s+/u);
+		if (parts[1] === undefined || !/^\d+$/u.test(parts[1])) {
 			return undefined;
 		}
 
@@ -3060,6 +3071,12 @@ export class InteractiveMode {
 	private async handleFollowUp(): Promise<void> {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!text) return;
+
+		if (isActionCommandText(text)) {
+			this.editor.setText("");
+			await this.handleActionCommand(text);
+			return;
+		}
 
 		// Queue input during compaction (extension commands execute immediately)
 		if (this.session.isCompacting) {
