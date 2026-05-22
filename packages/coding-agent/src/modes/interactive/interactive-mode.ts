@@ -10,6 +10,7 @@ import * as path from "node:path";
 import type { AgentMessage } from "@tsar/agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, OAuthProviderId } from "@tsar/ai";
 import type {
+	ActionableMarkdownOptions,
 	AutocompleteItem,
 	EditorComponent,
 	EditorTheme,
@@ -46,6 +47,10 @@ import {
 	getUpdateInstruction,
 	VERSION,
 } from "../../config.js";
+import {
+	ActionableMarkdownActionRegistry,
+	type RegisteredActionableMarkdownAction,
+} from "../../core/actionable-markdown-actions.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 import type {
 	ExtensionContext,
@@ -95,6 +100,7 @@ import { ToolExecutionComponent } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
+import { getActionableMarkdownEnabled, setActionableMarkdownEnabled } from "./settings/actionable-markdown-setting.js";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -120,10 +126,31 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
+function getMessageTimestamp(message: AgentMessage): number | undefined {
+	if (!("timestamp" in message) || typeof message.timestamp !== "number" || !Number.isFinite(message.timestamp)) {
+		return undefined;
+	}
+	return message.timestamp;
+}
+
+function formatActionPayloadLabel(payload: string): string {
+	const singleLine = payload.replace(/\s+/gu, " ").trim();
+	if (singleLine.length <= 80) {
+		return singleLine;
+	}
+	return `${singleLine.slice(0, 77)}…`;
+}
+
 type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
 };
+
+export interface InteractiveModeActionServices {
+	copyToClipboard: (text: string) => Promise<void>;
+	pasteToEditor: (text: string) => void;
+	openPath?: (absolutePath: string) => Promise<boolean | undefined> | boolean | undefined;
+}
 
 /**
  * Options for InteractiveMode initialization.
@@ -141,6 +168,8 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+	/** Injectable services for /action command tests and host integrations. */
+	actionServices?: Partial<InteractiveModeActionServices>;
 }
 
 export class InteractiveMode {
@@ -164,6 +193,10 @@ export class InteractiveMode {
 	private loadingAnimation: Loader | undefined = undefined;
 	private pendingWorkingMessage: string | undefined = undefined;
 	private readonly defaultWorkingMessage = "Working...";
+	private readonly actionRegistry = new ActionableMarkdownActionRegistry();
+	private readonly actionableMarkdownOptions: ActionableMarkdownOptions = {};
+	private actionServices: InteractiveModeActionServices;
+	private liveActionSourceCounter = 0;
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
@@ -273,6 +306,15 @@ export class InteractiveMode {
 			autocompleteMaxVisible,
 		});
 		this.editor = this.defaultEditor;
+		this.actionServices = {
+			copyToClipboard: options.actionServices?.copyToClipboard ?? copyToClipboard,
+			pasteToEditor:
+				options.actionServices?.pasteToEditor ??
+				((text) => {
+					this.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+				}),
+			openPath: options.actionServices?.openPath,
+		};
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider();
@@ -345,6 +387,10 @@ export class InteractiveMode {
 			name: command.name,
 			description: command.description,
 		}));
+		slashCommands.push({
+			name: "action",
+			description: "Execute a visible /action hint by id",
+		});
 
 		const modelCommand = slashCommands.find((command) => command.name === "model");
 		if (modelCommand) {
@@ -763,6 +809,55 @@ export class InteractiveMode {
 			...getMarkdownTheme(),
 			codeBlockIndent: this.settingsManager.getCodeBlockIndent(),
 		};
+	}
+
+	private isActionableMarkdownEnabled(): boolean {
+		return getActionableMarkdownEnabled(this.settingsManager);
+	}
+
+	private clearActionableMarkdownActions(): void {
+		this.actionRegistry.clear();
+	}
+
+	private getActionableMarkdownComponentOptions(actionSource: string | undefined):
+		| {
+				actionableMarkdown: true;
+				actionableMarkdownOptions: ActionableMarkdownOptions;
+				actionRegistry: ActionableMarkdownActionRegistry;
+				actionSource: string;
+		  }
+		| undefined {
+		if (!this.isActionableMarkdownEnabled() || actionSource === undefined) {
+			return undefined;
+		}
+
+		return {
+			actionableMarkdown: true,
+			actionableMarkdownOptions: this.actionableMarkdownOptions,
+			actionRegistry: this.actionRegistry,
+			actionSource,
+		};
+	}
+
+	private getHistoryActionSource(message: AgentMessage, renderIndex: number): string | undefined {
+		if (!this.isActionableMarkdownEnabled()) {
+			return undefined;
+		}
+
+		const timestamp = getMessageTimestamp(message);
+		const stablePart = timestamp === undefined ? `index-${renderIndex}` : String(timestamp);
+		return `interactive:history:${message.role}:${stablePart}:${renderIndex}`;
+	}
+
+	private createLiveActionSource(message: AgentMessage): string | undefined {
+		if (!this.isActionableMarkdownEnabled()) {
+			return undefined;
+		}
+
+		this.liveActionSourceCounter += 1;
+		const timestamp = getMessageTimestamp(message);
+		const stablePart = timestamp === undefined ? `live-${this.liveActionSourceCounter}` : String(timestamp);
+		return `interactive:live:${message.role}:${stablePart}:${this.liveActionSourceCounter}`;
 	}
 
 	// =========================================================================
@@ -2033,6 +2128,11 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text === "/action" || text.startsWith("/action ")) {
+				this.editor.setText("");
+				await this.handleActionCommand(text);
+				return;
+			}
 			if (text === "/settings") {
 				this.showSettingsSelector();
 				this.editor.setText("");
@@ -2198,6 +2298,131 @@ export class InteractiveMode {
 		};
 	}
 
+	private async handleActionCommand(text: string): Promise<void> {
+		const actionId = this.parseActionCommandId(text);
+		if (actionId === undefined) {
+			this.showError("Usage: /action <id>");
+			return;
+		}
+
+		if (!this.isActionableMarkdownEnabled()) {
+			this.showWarning("Action hints are disabled. Enable Action hints in /settings first.");
+			return;
+		}
+
+		const action = this.actionRegistry.getAction(actionId);
+		if (action === undefined) {
+			this.showError(`Unknown action id: ${actionId}`);
+			return;
+		}
+
+		await this.executeActionableMarkdownAction(action);
+	}
+
+	private parseActionCommandId(text: string): number | undefined {
+		const parts = text.trim().split(/\s+/u);
+		if (parts[0] !== "/action" || parts[1] === undefined || !/^\d+$/u.test(parts[1])) {
+			return undefined;
+		}
+
+		const actionId = Number(parts[1]);
+		if (!Number.isSafeInteger(actionId) || actionId < 1) {
+			return undefined;
+		}
+
+		return actionId;
+	}
+
+	private async executeActionableMarkdownAction(action: RegisteredActionableMarkdownAction): Promise<void> {
+		switch (action.kind) {
+			case "copy-code-block":
+			case "copy-shell-step":
+			case "copy-path":
+				await this.copyActionPayload(action);
+				return;
+			case "paste-code-block":
+			case "paste-shell-step":
+				this.pasteActionPayload(action);
+				return;
+			case "open-path":
+				await this.openActionPath(action);
+				return;
+		}
+	}
+
+	private async copyActionPayload(action: RegisteredActionableMarkdownAction): Promise<void> {
+		try {
+			await this.actionServices.copyToClipboard(action.payload);
+			this.showStatus(`Copied ${action.label}: ${formatActionPayloadLabel(action.payload)}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private pasteActionPayload(action: RegisteredActionableMarkdownAction): void {
+		this.actionServices.pasteToEditor(action.payload);
+		this.showStatus(`Pasted ${action.label}: ${formatActionPayloadLabel(action.payload)}`);
+	}
+
+	private async openActionPath(action: RegisteredActionableMarkdownAction): Promise<void> {
+		const resolvedPath = this.resolveLocalActionPath(action.payload);
+		if (resolvedPath === undefined) {
+			this.showError(`Cannot open non-local or missing path: ${action.payload}`);
+			return;
+		}
+
+		const openPath = this.actionServices.openPath;
+		if (openPath === undefined) {
+			await this.copyOpenPathFallback(action.payload, "No path opener configured");
+			return;
+		}
+
+		try {
+			const opened = await openPath(resolvedPath);
+			if (opened === false) {
+				await this.copyOpenPathFallback(action.payload, "Path opener unavailable");
+				return;
+			}
+			this.showStatus(`Opened path: ${action.payload}`);
+		} catch (error) {
+			await this.copyOpenPathFallback(action.payload, error instanceof Error ? error.message : "Path opener failed");
+		}
+	}
+
+	private resolveLocalActionPath(rawPath: string): string | undefined {
+		const candidate = rawPath.trim();
+		if (
+			candidate.length === 0 ||
+			candidate.includes("\0") ||
+			candidate.startsWith("//") ||
+			/^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(candidate) ||
+			candidate.toLowerCase().startsWith("file:")
+		) {
+			return undefined;
+		}
+
+		const resolvedPath = path.resolve(process.cwd(), candidate);
+		try {
+			const stat = fs.statSync(resolvedPath);
+			if (!stat.isFile() && !stat.isDirectory()) {
+				return undefined;
+			}
+		} catch {
+			return undefined;
+		}
+
+		return resolvedPath;
+	}
+
+	private async copyOpenPathFallback(rawPath: string, reason: string): Promise<void> {
+		try {
+			await this.actionServices.copyToClipboard(rawPath);
+			this.showStatus(`Copied path to clipboard (${reason}): ${rawPath}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	private subscribeToAgent(): void {
 		this.unsubscribe = this.session.subscribe(async (event) => {
 			await this.handleEvent(event);
@@ -2246,17 +2471,19 @@ export class InteractiveMode {
 
 			case "message_start":
 				if (event.message.role === "custom") {
-					this.addMessageToChat(event.message);
+					this.addMessageToChat(event.message, { actionSource: this.createLiveActionSource(event.message) });
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
+					const actionSource = this.createLiveActionSource(event.message);
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
 						this.getMarkdownThemeWithSettings(),
+						this.getActionableMarkdownComponentOptions(actionSource),
 					);
 					this.streamingMessage = event.message;
 					this.chatContainer.addChild(this.streamingComponent);
@@ -2385,6 +2612,7 @@ export class InteractiveMode {
 					this.statusContainer.clear();
 				}
 				if (this.streamingComponent) {
+					this.streamingComponent.clearActionSources();
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
@@ -2537,7 +2765,10 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
+	private addMessageToChat(
+		message: AgentMessage,
+		options?: { populateHistory?: boolean; actionSource?: string },
+	): void {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -2556,7 +2787,12 @@ export class InteractiveMode {
 			case "custom": {
 				if (message.display) {
 					const renderer = this.session.extensionRunner?.getMessageRenderer(message.customType);
-					const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
+					const component = new CustomMessageComponent(
+						message,
+						renderer,
+						this.getMarkdownThemeWithSettings(),
+						this.getActionableMarkdownComponentOptions(options?.actionSource),
+					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}
@@ -2612,6 +2848,7 @@ export class InteractiveMode {
 					message,
 					this.hideThinkingBlock,
 					this.getMarkdownThemeWithSettings(),
+					this.getActionableMarkdownComponentOptions(options?.actionSource),
 				);
 				this.chatContainer.addChild(assistantComponent);
 				break;
@@ -2637,16 +2874,20 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
 		this.pendingTools.clear();
+		this.clearActionableMarkdownActions();
 
 		if (options.updateFooter) {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
 		}
 
+		let renderIndex = 0;
 		for (const message of sessionContext.messages) {
+			const actionSource = this.getHistoryActionSource(message, renderIndex);
+			renderIndex += 1;
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
-				this.addMessageToChat(message);
+				this.addMessageToChat(message, { actionSource });
 				// Render tool call components
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
@@ -2687,7 +2928,7 @@ export class InteractiveMode {
 				}
 			} else {
 				// All other messages use standard rendering
-				this.addMessageToChat(message, options);
+				this.addMessageToChat(message, { ...options, actionSource });
 			}
 		}
 
@@ -3247,6 +3488,7 @@ export class InteractiveMode {
 					autoResizeImages: this.settingsManager.getImageAutoResize(),
 					blockImages: this.settingsManager.getBlockImages(),
 					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
+					actionableMarkdown: this.isActionableMarkdownEnabled(),
 					steeringMode: this.session.steeringMode,
 					followUpMode: this.session.followUpMode,
 					transport: this.settingsManager.getTransport(),
@@ -3285,6 +3527,12 @@ export class InteractiveMode {
 					},
 					onEnableSkillCommandsChange: (enabled) => {
 						this.settingsManager.setEnableSkillCommands(enabled);
+						this.setupAutocomplete(this.fdPath);
+					},
+					onActionableMarkdownChange: (enabled) => {
+						setActionableMarkdownEnabled(this.settingsManager, enabled);
+						this.chatContainer.clear();
+						this.rebuildChatFromMessages();
 						this.setupAutocomplete(this.fdPath);
 					},
 					onSteeringModeChange: (mode) => {
@@ -4421,6 +4669,7 @@ export class InteractiveMode {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
+		this.clearActionableMarkdownActions();
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1));

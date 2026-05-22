@@ -196,6 +196,10 @@ export class AssistantMessageComponent extends Container {
 		return `${this.actionSource}:assistant:${contentIndex}`;
 	}
 
+	clearActionSources(): void {
+		this.clearUnusedActionSources(new Set());
+	}
+
 	private clearUnusedActionSources(nextActionSources: Set<string>): void {
 		if (this.actionRegistry !== undefined) {
 			for (const sourceId of this.markdownActionSources) {

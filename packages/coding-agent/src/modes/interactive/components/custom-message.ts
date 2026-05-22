@@ -166,6 +166,10 @@ export class CustomMessageComponent extends Container {
 		return `${this.actionSource}:custom:fallback`;
 	}
 
+	clearActionSources(): void {
+		this.clearUnusedActionSources(new Set());
+	}
+
 	private clearUnusedActionSources(nextActionSources: Set<string>): void {
 		if (this.actionRegistry !== undefined) {
 			for (const sourceId of this.markdownActionSources) {
