@@ -1,5 +1,12 @@
 // Core TUI interfaces and classes
 
+// Actionable Markdown parser
+export {
+	type ActionableMarkdownCodeBlock,
+	type ActionableMarkdownParseResult,
+	type ActionableShellStep,
+	parseActionableMarkdown,
+} from "./actionable-markdown.js";
 // Autocomplete support
 export {
 	type AutocompleteItem,
