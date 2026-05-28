@@ -486,7 +486,7 @@ async function prepareToolCall(
 			if (beforeResult?.block) {
 				return {
 					kind: "immediate",
-					result: createErrorToolResult(beforeResult.reason || "Tool execution was blocked"),
+					result: createErrorToolResult(beforeResult.reason || "Tool execution was blocked", beforeResult.details),
 					isError: true,
 				};
 			}
@@ -579,10 +579,10 @@ async function finalizeExecutedToolCall(
 	return await emitToolCallOutcome(prepared.toolCall, result, isError, emit);
 }
 
-function createErrorToolResult(message: string): AgentToolResult<any> {
+function createErrorToolResult(message: string, details: unknown = {}): AgentToolResult<unknown> {
 	return {
 		content: [{ type: "text", text: message }],
-		details: {},
+		details,
 	};
 }
 

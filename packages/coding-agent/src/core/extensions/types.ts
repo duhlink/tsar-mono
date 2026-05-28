@@ -894,6 +894,8 @@ export interface ToolCallEventResult {
 	/** Block tool execution. To modify arguments, mutate `event.input` in place instead. */
 	block?: boolean;
 	reason?: string;
+	/** Structured metadata copied to the blocked tool result when `block` is true. */
+	details?: unknown;
 }
 
 /** Result from user_bash event handler */

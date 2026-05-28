@@ -369,6 +369,108 @@ describe("agentLoop with AgentMessage", () => {
 		expect(executed).toEqual([123]);
 	});
 
+	it("should propagate blocked beforeToolCall details and keep empty details by default", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		let executeCount = 0;
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executeCount++;
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const blockedDetails = {
+			policy: "protected-path",
+			match: { path: "secrets.env", operation: "read" },
+		};
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeToolCall: async ({ toolCall }) => {
+				if (toolCall.id === "tool-1") {
+					return { block: true, reason: "Blocked with details", details: blockedDetails };
+				}
+				return { block: true, reason: "Blocked without details" };
+			},
+		};
+
+		let callIndex = 0;
+		const stream = agentLoop([createUserMessage("echo blocked")], context, config, undefined, () => {
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const message = createAssistantMessage(
+						[
+							{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+							{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+						],
+						"toolUse",
+					);
+					mockStream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return mockStream;
+		});
+
+		const events: AgentEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		expect(executeCount).toBe(0);
+
+		const toolEnds = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> => event.type === "tool_execution_end",
+		);
+		const toolResultMessages = events.flatMap((event) => {
+			if (event.type !== "message_end" || event.message.role !== "toolResult") {
+				return [];
+			}
+			return [event.message];
+		});
+
+		expect(toolEnds).toHaveLength(2);
+		expect(toolResultMessages).toHaveLength(2);
+		expect(toolEnds[0].result).toEqual({
+			content: [{ type: "text", text: "Blocked with details" }],
+			details: blockedDetails,
+		});
+		expect(toolResultMessages[0]).toMatchObject({
+			toolCallId: "tool-1",
+			content: [{ type: "text", text: "Blocked with details" }],
+			details: blockedDetails,
+			isError: true,
+		});
+		expect(toolEnds[1].result).toEqual({
+			content: [{ type: "text", text: "Blocked without details" }],
+			details: {},
+		});
+		expect(toolResultMessages[1]).toMatchObject({
+			toolCallId: "tool-2",
+			content: [{ type: "text", text: "Blocked without details" }],
+			details: {},
+			isError: true,
+		});
+	});
+
 	it("should execute tool calls in parallel and emit tool results in source order", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		let firstResolved = false;
