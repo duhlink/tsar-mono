@@ -590,77 +590,442 @@ export function findCutPoint(
 // Summarization
 // ============================================================================
 
-const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+export interface CompactionSummaryRequiredSection {
+	heading: string;
+	placeholder: string;
+}
 
-Use this EXACT format:
+export interface CompactionSummaryValidation {
+	valid: boolean;
+	missingSections: string[];
+}
 
-## Goal
-[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+export const COMPACTION_SUMMARY_REQUIRED_SECTIONS: readonly CompactionSummaryRequiredSection[] = [
+	{ heading: "Original Request / Goal", placeholder: "- (not captured)" },
+	{ heading: "Requirements", placeholder: "- (not captured)" },
+	{ heading: "Acceptance Criteria", placeholder: "- (not captured)" },
+	{ heading: "Constraints & Preferences", placeholder: "- (none identified)" },
+	{ heading: "Progress / Current State", placeholder: "- (not captured)" },
+	{ heading: "Blockers", placeholder: "- (none identified)" },
+	{ heading: "Key Decisions", placeholder: "- (none identified)" },
+	{ heading: "Next Steps", placeholder: "1. (not captured)" },
+	{ heading: "Critical Context", placeholder: "- (not captured)" },
+] as const;
+
+interface SummarySectionRange {
+	heading: string;
+	start: number;
+	end: number;
+	body: string;
+	text: string;
+}
+
+function normalizeSummaryHeading(heading: string): string {
+	return heading.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function findFileOperationTagStart(summary: string, start: number, end: number): number | undefined {
+	const tagStarts = ["<read-files>", "<modified-files>"]
+		.map((tag) => summary.indexOf(tag, start))
+		.filter((index) => index >= 0 && index < end);
+	if (tagStarts.length === 0) return undefined;
+	return Math.min(...tagStarts);
+}
+
+function collectSummarySections(summary: string): SummarySectionRange[] {
+	const headingPattern = /^##\s+(.+?)\s*$/gm;
+	const matches = [...summary.matchAll(headingPattern)];
+	return matches.map((match, index) => {
+		const start = match.index ?? 0;
+		const bodyStart = start + match[0].length;
+		const nextSectionStart = matches[index + 1]?.index ?? summary.length;
+		const fileOperationTagStart = findFileOperationTagStart(summary, bodyStart, nextSectionStart);
+		const end = fileOperationTagStart ?? nextSectionStart;
+		return {
+			heading: match[1] ?? "",
+			start,
+			end,
+			body: summary.slice(bodyStart, end).trim(),
+			text: summary.slice(start, end).trimEnd(),
+		};
+	});
+}
+
+function findSummarySection(summary: string, heading: string): SummarySectionRange | undefined {
+	const targetHeading = normalizeSummaryHeading(heading);
+	return collectSummarySections(summary).find((section) => normalizeSummaryHeading(section.heading) === targetHeading);
+}
+
+const SUMMARY_PLACEHOLDER_VALUES = new Set(["(not captured)", "(none identified)"]);
+const SUMMARY_RESOLUTION_PATTERN =
+	/\b(resolve[sd]?|supersede[sd]?|supercede[sd]?|replace[sd]?|obsolete|no longer relevant|no longer applies|fixe?[sd]?|closed|removed)\b/i;
+const SUMMARY_ANCHOR_PATTERN =
+	/\b(?:[tdj]_[0-9]{8}_[a-z0-9]+|plan_[0-9]{8}_[a-z0-9]+|step_[0-9]+|inc_[0-9]{8}_[0-9]+|qf_[0-9]{8}_[0-9]+|dlg_[0-9]{8}_[a-z0-9]+|[0-9a-f]{7,40}|[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)\b/gi;
+const SUMMARY_DETAIL_STOPWORDS = new Set([
+	"about",
+	"after",
+	"again",
+	"also",
+	"and",
+	"any",
+	"are",
+	"been",
+	"being",
+	"closed",
+	"completed",
+	"current",
+	"done",
+	"fixed",
+	"for",
+	"from",
+	"has",
+	"have",
+	"into",
+	"its",
+	"line",
+	"new",
+	"not",
+	"now",
+	"old",
+	"onto",
+	"prior",
+	"removed",
+	"resolved",
+	"same",
+	"section",
+	"summary",
+	"that",
+	"the",
+	"these",
+	"this",
+	"those",
+	"was",
+	"were",
+	"with",
+	"work",
+]);
+const SUMMARY_LONG_DETAIL_TERM_LENGTH = 12;
+const SUMMARY_MIN_SHARED_DETAIL_TERMS = 2;
+
+function getSummaryContentLines(body: string): string[] {
+	return body
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0 && !line.startsWith("###"));
+}
+
+function stripSummaryListPrefix(line: string): string {
+	return line
+		.trim()
+		.replace(/^[-*]\s+/, "")
+		.replace(/^\d+\.\s+/, "")
+		.replace(/^\[[ xX]\]\s+/, "")
+		.trim();
+}
+
+function normalizeSummaryContentLine(line: string): string {
+	return stripSummaryListPrefix(line).replace(/\s+/g, " ").toLowerCase();
+}
+
+function isPlaceholderContentLine(line: string): boolean {
+	return SUMMARY_PLACEHOLDER_VALUES.has(normalizeSummaryContentLine(line));
+}
+
+function isEmptySummarySectionBody(body: string): boolean {
+	return getSummaryContentLines(body).length === 0;
+}
+
+function isPlaceholderOnlySectionBody(body: string): boolean {
+	const contentLines = getSummaryContentLines(body);
+	if (contentLines.length === 0) return true;
+	return contentLines.every(isPlaceholderContentLine);
+}
+
+function replaceSummarySection(summary: string, section: SummarySectionRange, replacement: string): string {
+	const before = summary.slice(0, section.start).trimEnd();
+	const after = summary.slice(section.end).trimStart();
+	return [before, replacement.trim(), after].filter((part) => part.length > 0).join("\n\n");
+}
+
+function formatMissingSummarySection(section: CompactionSummaryRequiredSection): string {
+	return `## ${section.heading}\n${section.placeholder}`;
+}
+
+function extractSummaryAnchors(line: string): Set<string> {
+	const anchors = new Set<string>();
+	for (const match of line.matchAll(SUMMARY_ANCHOR_PATTERN)) {
+		anchors.add(match[0].toLowerCase());
+	}
+	for (const match of line.matchAll(/`([^`]+)`/g)) {
+		const anchor = normalizeSummaryContentLine(match[1] ?? "");
+		if (anchor.length > 1 && !SUMMARY_PLACEHOLDER_VALUES.has(anchor)) {
+			anchors.add(anchor);
+		}
+	}
+	return anchors;
+}
+
+function extractSummaryDetailTerms(line: string): Set<string> {
+	const normalizedLine = normalizeSummaryContentLine(line)
+		.replace(SUMMARY_ANCHOR_PATTERN, " ")
+		.replace(/`([^`]+)`/g, " $1 ");
+	const terms = new Set<string>();
+	for (const term of normalizedLine.split(/[^a-z0-9_]+/i)) {
+		if (term.length < 3 || SUMMARY_DETAIL_STOPWORDS.has(term)) continue;
+		terms.add(term);
+	}
+	return terms;
+}
+
+function hasSpecificSummaryDetailOverlap(previousLine: string, currentLine: string): boolean {
+	const previousTerms = extractSummaryDetailTerms(previousLine);
+	if (previousTerms.size === 0) return false;
+
+	let sharedTermCount = 0;
+	for (const currentTerm of extractSummaryDetailTerms(currentLine)) {
+		if (!previousTerms.has(currentTerm)) continue;
+		if (currentTerm.length >= SUMMARY_LONG_DETAIL_TERM_LENGTH) return true;
+		sharedTermCount += 1;
+		if (sharedTermCount >= SUMMARY_MIN_SHARED_DETAIL_TERMS) return true;
+	}
+	return false;
+}
+
+function isSummaryLineRepresented(previousLine: string, currentLines: readonly string[]): boolean {
+	const previous = normalizeSummaryContentLine(previousLine);
+	if (previous.length === 0 || isPlaceholderContentLine(previousLine)) return true;
+
+	return currentLines.some((line) => {
+		const current = normalizeSummaryContentLine(line);
+		if (current.length === 0) return false;
+		return (
+			current === previous ||
+			(previous.length >= 16 && current.includes(previous)) ||
+			(current.length >= 16 && previous.includes(current))
+		);
+	});
+}
+
+function isSummaryLineExplicitlyResolved(previousLine: string, currentLines: readonly string[]): boolean {
+	const previous = normalizeSummaryContentLine(previousLine);
+	if (previous.length === 0 || isPlaceholderContentLine(previousLine)) return true;
+
+	const previousAnchors = extractSummaryAnchors(previousLine);
+	return currentLines.some((line) => {
+		if (!SUMMARY_RESOLUTION_PATTERN.test(line)) return false;
+
+		const current = normalizeSummaryContentLine(line);
+		if (previous.length >= 16 && (current.includes(previous) || previous.includes(current))) {
+			return true;
+		}
+
+		if (previousAnchors.size === 0) return false;
+		const currentAnchors = extractSummaryAnchors(line);
+		let sharesAnchor = false;
+		for (const anchor of previousAnchors) {
+			if (currentAnchors.has(anchor)) {
+				sharesAnchor = true;
+				break;
+			}
+		}
+		if (!sharesAnchor) return false;
+
+		// A shared path/ID only proves the lines are related. Preserve prior details unless
+		// the current line also overlaps the specific non-anchor detail being resolved.
+		return hasSpecificSummaryDetailOverlap(previousLine, line);
+	});
+}
+
+function getMissingPreviousSectionLines(previousBody: string, currentBody: string): string[] {
+	const currentLines = currentBody.split("\n").map((line) => line.trimEnd());
+	const missingLines: string[] = [];
+	let pendingBlank = false;
+
+	for (const line of previousBody.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed.length === 0) {
+			if (missingLines.length > 0) pendingBlank = true;
+			continue;
+		}
+		if (
+			isSummaryLineRepresented(line, currentLines) ||
+			isSummaryLineExplicitlyResolved(line, currentLines) ||
+			isPlaceholderContentLine(line)
+		) {
+			pendingBlank = false;
+			continue;
+		}
+		if (pendingBlank && missingLines.length > 0) missingLines.push("");
+		pendingBlank = false;
+		missingLines.push(line.trimEnd());
+	}
+
+	while (missingLines[missingLines.length - 1] === "") {
+		missingLines.pop();
+	}
+	return missingLines;
+}
+
+function mergeSummarySectionText(
+	requiredSection: CompactionSummaryRequiredSection,
+	currentSection: SummarySectionRange,
+	previousSection: SummarySectionRange,
+): string {
+	const missingPreviousLines = getMissingPreviousSectionLines(previousSection.body, currentSection.body);
+	if (missingPreviousLines.length === 0) return currentSection.text;
+
+	return [
+		`## ${requiredSection.heading}`,
+		currentSection.body.trimEnd(),
+		"",
+		"### Preserved From Previous Summary",
+		missingPreviousLines.join("\n"),
+	]
+		.filter((part, index) => index === 2 || part.length > 0)
+		.join("\n");
+}
+
+export function validateCompactionSummarySchema(summary: string): CompactionSummaryValidation {
+	const sections = collectSummarySections(summary);
+	const missingSections = COMPACTION_SUMMARY_REQUIRED_SECTIONS.filter((section) => {
+		const matchingSection = sections.find(
+			(summarySection) =>
+				normalizeSummaryHeading(summarySection.heading) === normalizeSummaryHeading(section.heading),
+		);
+		return !matchingSection || isEmptySummarySectionBody(matchingSection.body);
+	}).map((section) => section.heading);
+
+	return {
+		valid: missingSections.length === 0,
+		missingSections,
+	};
+}
+
+export function repairCompactionSummarySchema(summary: string, previousSummary?: string): string {
+	let repairedSummary = summary.trim();
+
+	for (const requiredSection of COMPACTION_SUMMARY_REQUIRED_SECTIONS) {
+		const currentSection = findSummarySection(repairedSummary, requiredSection.heading);
+		if (!currentSection) continue;
+
+		const previousSection = previousSummary
+			? findSummarySection(previousSummary, requiredSection.heading)
+			: undefined;
+		const previousHasContent = previousSection !== undefined && !isPlaceholderOnlySectionBody(previousSection.body);
+		if (isEmptySummarySectionBody(currentSection.body)) {
+			repairedSummary = replaceSummarySection(
+				repairedSummary,
+				currentSection,
+				previousHasContent && previousSection ? previousSection.text : formatMissingSummarySection(requiredSection),
+			);
+			continue;
+		}
+
+		if (!previousSection || !previousHasContent) continue;
+
+		if (isPlaceholderOnlySectionBody(currentSection.body)) {
+			repairedSummary = replaceSummarySection(repairedSummary, currentSection, previousSection.text);
+			continue;
+		}
+
+		const mergedSection = mergeSummarySectionText(requiredSection, currentSection, previousSection);
+		if (mergedSection !== currentSection.text) {
+			repairedSummary = replaceSummarySection(repairedSummary, currentSection, mergedSection);
+		}
+	}
+
+	const missingSections = validateCompactionSummarySchema(repairedSummary).missingSections;
+	if (missingSections.length === 0) {
+		return repairedSummary;
+	}
+
+	const additions = missingSections.map((missingHeading) => {
+		const requiredSection = COMPACTION_SUMMARY_REQUIRED_SECTIONS.find(
+			(section) => section.heading === missingHeading,
+		)!;
+		const previousSection = previousSummary ? findSummarySection(previousSummary, missingHeading) : undefined;
+		if (previousSection && !isPlaceholderOnlySectionBody(previousSection.body)) {
+			return previousSection.text;
+		}
+		return formatMissingSummarySection(requiredSection);
+	});
+
+	return [repairedSummary, ...additions].filter((part) => part.length > 0).join("\n\n");
+}
+
+export function ensureCompactionSummarySchema(summary: string, previousSummary?: string): string {
+	return repairCompactionSummarySchema(summary, previousSummary);
+}
+
+const COMPACTION_SUMMARY_SCHEMA_PROMPT = `## Original Request / Goal
+- [Restate the user's original request/goal in enough detail to continue, preserving exact task names/IDs if present]
+
+## Requirements
+- [Explicit requirements or must-have behavior]
+- [Use "(not captured)" if requirements cannot be determined]
+
+## Acceptance Criteria
+- [Completion criteria, validation commands, or success conditions]
+- [Use "(not captured)" if acceptance criteria were not stated]
 
 ## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
-- [Or "(none)" if none were mentioned]
+- [User constraints, repository/worktree constraints, scope boundaries, style preferences, or forbidden actions]
+- [Use "(none identified)" if none were identified]
 
-## Progress
+## Progress / Current State
 ### Done
-- [x] [Completed tasks/changes]
+- [x] [Completed work]
 
 ### In Progress
-- [ ] [Current work]
+- [ ] [Current work and current state]
 
-### Blocked
-- [Issues preventing progress, if any]
+## Blockers
+- [Known blockers, failures, risks, or open questions]
+- [Use "(none identified)" if there are no known blockers]
 
 ## Key Decisions
-- **[Decision]**: [Brief rationale]
+- **[Decision/task/plan ID if available]**: [Decision and brief rationale]
+- [Use "(none identified)" if no decisions were made]
 
 ## Next Steps
-1. [Ordered list of what should happen next]
+1. [Ordered next action]
+2. [Include exact commands/tests to run when known]
 
 ## Critical Context
-- [Any data, examples, or references needed to continue]
-- [Or "(none)" if not applicable]
+- [Exact file paths, function names, commands, errors, IDs, constraints, examples, or data needed to continue]
+- [Use "(not captured)" if no critical context was captured]`;
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+const SUMMARY_PRESERVATION_INSTRUCTIONS = `Preserve exact file paths, function names, commands, command outputs/errors, stack traces, decision IDs, task IDs, plan/step IDs, commit hashes, user constraints, and scope boundaries. Do not invent details. If a required section has no source evidence, keep the section and use the specified placeholder marker.`;
+
+const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a durable structured context checkpoint summary that another LLM will use to continue the work.
+
+ContinuationContract/user-intent records are the authoritative source of intent when present; this summary is secondary and must preserve context without adding policy.
+
+${SUMMARY_PRESERVATION_INSTRUCTIONS}
+
+Use this EXACT schema, headings, and order. Do not rename or remove sections:
+
+${COMPACTION_SUMMARY_SCHEMA_PROMPT}
+
+Keep each section concise while retaining critical details needed for safe continuation.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
-- ADD new progress, decisions, and context from the new messages
-- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
-- UPDATE "Next Steps" based on what was accomplished
-- PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
+- PRESERVE all existing information from the previous summary unless the new messages explicitly resolve or supersede it
+- ADD new requirements, acceptance criteria, constraints, progress, decisions, blockers, and critical context from the new messages
+- UPDATE progress safely: move items to Done only when completion is evidenced, keep unresolved work in In Progress, and keep resolved blockers with resolution context rather than silently deleting history
+- UPDATE Next Steps based on what was accomplished and what remains
+- PRESERVE exact file paths, function names, commands, command outputs/errors, decision IDs, task IDs, plan/step IDs, commit hashes, user constraints, and scope boundaries
+- Do NOT replace previously captured details with "(not captured)" or "(none identified)" when prior details still apply
 
-Use this EXACT format:
+${SUMMARY_PRESERVATION_INSTRUCTIONS}
 
-## Goal
-[Preserve existing goals, add new ones if the task expanded]
+Use this EXACT schema, headings, and order. Do not rename or remove sections:
 
-## Constraints & Preferences
-- [Preserve existing, add new ones discovered]
+${COMPACTION_SUMMARY_SCHEMA_PROMPT}
 
-## Progress
-### Done
-- [x] [Include previously done items AND newly completed items]
-
-### In Progress
-- [ ] [Current work - update based on progress]
-
-### Blocked
-- [Current blockers - remove if resolved]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale] (preserve all previous, add new)
-
-## Next Steps
-1. [Update based on current state]
-
-## Critical Context
-- [Preserve important context, add new if needed]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise while retaining critical details needed for safe continuation.`;
 
 /**
  * Generate a summary of the conversation using the LLM.
@@ -723,7 +1088,7 @@ export async function generateSummary(
 		.map((c) => c.text)
 		.join("\n");
 
-	return textContent;
+	return ensureCompactionSummarySchema(textContent, previousSummary);
 }
 
 // ============================================================================
@@ -839,18 +1204,15 @@ export function prepareCompaction(
 
 const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
-Summarize the prefix to provide context for the retained suffix:
+Summarize the prefix using the same durable compaction schema so the retained suffix has safe context. Focus on what the prefix contributes to understanding the kept suffix.
 
-## Original Request
-[What did the user ask for in this turn?]
+${SUMMARY_PRESERVATION_INSTRUCTIONS}
 
-## Early Progress
-- [Key decisions and work done in the prefix]
+Use this EXACT schema, headings, and order. Do not rename or remove sections:
 
-## Context for Suffix
-- [Information needed to understand the retained recent work]
+${COMPACTION_SUMMARY_SCHEMA_PROMPT}
 
-Be concise. Focus on what's needed to understand the kept suffix.`;
+Be concise. Do not continue the conversation or infer details from the retained suffix.`;
 
 /**
  * Generate summaries for compaction using prepared data.
@@ -914,6 +1276,9 @@ export async function compact(
 		);
 	}
 
+	// Validate/repair the generated or merged summary before returning it.
+	summary = ensureCompactionSummarySchema(summary, previousSummary);
+
 	// Compute file lists and append to summary
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	summary += formatFileOperations(readFiles, modifiedFiles);
@@ -963,8 +1328,10 @@ async function generateTurnPrefixSummary(
 		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
 	}
 
-	return response.content
+	const textContent = response.content
 		.filter((c): c is { type: "text"; text: string } => c.type === "text")
 		.map((c) => c.text)
 		.join("\n");
+
+	return ensureCompactionSummarySchema(textContent);
 }

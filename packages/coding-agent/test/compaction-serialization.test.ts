@@ -44,6 +44,27 @@ describe("serializeConversation", () => {
 		expect(result).not.toContain("truncated");
 	});
 
+	it("should bound noisy tool errors while preserving the leading diagnostic", () => {
+		const noisyError = `Error: failed command in packages/coding-agent/src/core/compaction/compaction.ts\n${"z".repeat(4500)}`;
+		const messages: Message[] = [
+			{
+				role: "toolResult",
+				toolCallId: "tc-error",
+				toolName: "bash",
+				content: [{ type: "text", text: noisyError }],
+				isError: true,
+				timestamp: Date.now(),
+			},
+		];
+
+		const result = serializeConversation(messages);
+
+		expect(result).toContain("Error: failed command in packages/coding-agent/src/core/compaction/compaction.ts");
+		expect(result).toContain("more characters truncated");
+		expect(result.length).toBeLessThan(noisyError.length);
+		expect(result).not.toContain("z".repeat(3000));
+	});
+
 	it("should not truncate assistant or user messages", () => {
 		const longText = "y".repeat(5000);
 		const messages: Message[] = [

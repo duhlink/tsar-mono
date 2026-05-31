@@ -1,21 +1,36 @@
 import type { AgentMessage } from "@tsar/agent-core";
 import type { AssistantMessage, ImageContent, ToolResultMessage, Usage } from "@tsar/ai";
-import { getModel } from "@tsar/ai";
+import { completeSimple, getModel } from "@tsar/ai";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tsar/ai", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@tsar/ai")>();
+	return {
+		...actual,
+		completeSimple: vi.fn(actual.completeSimple),
+	};
+});
+
 import {
+	COMPACTION_SUMMARY_REQUIRED_SECTIONS,
+	type CompactionPreparation,
 	type CompactionSettings,
 	calculateContextTokens,
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	effectiveKeepRecentTokens,
+	ensureCompactionSummarySchema,
 	estimateContextTokens,
 	estimateTokens,
 	findCutPoint,
+	generateSummary,
 	getLastAssistantUsage,
 	prepareCompaction,
+	repairCompactionSummarySchema,
 	shouldCompact,
+	validateCompactionSummarySchema,
 } from "../src/core/compaction/index.js";
 import {
 	buildSessionContext,
@@ -103,6 +118,7 @@ function resetEntryCounter() {
 // Reset counter before each test to get predictable IDs
 beforeEach(() => {
 	resetEntryCounter();
+	vi.mocked(completeSimple).mockClear();
 });
 
 function createMessageEntry(message: AgentMessage): SessionMessageEntry {
@@ -196,9 +212,208 @@ function extractText(messages: AgentMessage[]): string {
 		.join("\n");
 }
 
+function createCompleteCompactionSummary(overrides: Record<string, string> = {}): string {
+	const defaults: Record<string, string> = {
+		"Original Request / Goal": "- Implement t_20260530_005 summary schema validation.",
+		Requirements: "- Add deterministic validation and repair for required summary sections.",
+		"Acceptance Criteria": "- Focused compaction tests pass.",
+		"Constraints & Preferences": "- Modify only scoped compaction files.",
+		"Progress / Current State":
+			"### Done\n- [x] Existing compaction behavior inspected.\n\n### In Progress\n- [ ] Summary schema validation implementation.",
+		Blockers: "- (none identified)",
+		"Key Decisions": "- **d_20260530_010**: ContinuationContract remains authoritative.",
+		"Next Steps": "1. Run focused compaction tests.",
+		"Critical Context": "- packages/coding-agent/src/core/compaction/compaction.ts",
+	};
+
+	return COMPACTION_SUMMARY_REQUIRED_SECTIONS.map((section) => {
+		return `## ${section.heading}\n${overrides[section.heading] ?? defaults[section.heading] ?? section.placeholder}`;
+	}).join("\n\n");
+}
+
+function mockSummarizationResponse(summary: string): void {
+	vi.mocked(completeSimple).mockResolvedValueOnce({
+		content: [{ type: "text", text: summary }],
+		stopReason: "stop",
+	} as any);
+}
+
 // ============================================================================
 // Unit tests
 // ============================================================================
+
+describe("compaction summary schema", () => {
+	it("should accept a complete required-section schema", () => {
+		const summary = createCompleteCompactionSummary();
+		const validation = validateCompactionSummarySchema(summary);
+
+		expect(validation.valid).toBe(true);
+		expect(validation.missingSections).toEqual([]);
+		expect(ensureCompactionSummarySchema(summary)).toBe(summary);
+	});
+
+	it("should deterministically repair missing required sections", () => {
+		const partialSummary = `## Original Request / Goal
+- Add safer compaction summaries.
+
+## Requirements
+- Preserve exact file paths.`;
+
+		const repaired = repairCompactionSummarySchema(partialSummary);
+		const validation = validateCompactionSummarySchema(repaired);
+
+		expect(validation.valid).toBe(true);
+		expect(repaired).toContain("## Acceptance Criteria\n- (not captured)");
+		expect(repaired).toContain("## Constraints & Preferences\n- (none identified)");
+		expect(repaired).toContain("## Blockers\n- (none identified)");
+		expect(repaired).toContain("## Next Steps\n1. (not captured)");
+	});
+
+	it("should treat empty required section bodies as invalid and repair with explicit placeholders", () => {
+		const emptyRequiredSectionSummary = createCompleteCompactionSummary({
+			Requirements: "   ",
+		});
+
+		const validation = validateCompactionSummarySchema(emptyRequiredSectionSummary);
+		expect(validation.valid).toBe(false);
+		expect(validation.missingSections).toContain("Requirements");
+
+		const repaired = repairCompactionSummarySchema(emptyRequiredSectionSummary);
+		expect(validateCompactionSummarySchema(repaired).valid).toBe(true);
+		expect(repaired).toContain("## Requirements\n- (not captured)");
+		expect(repaired.match(/## Requirements/g)).toHaveLength(1);
+	});
+
+	it("should preserve prior section details when an update returns non-placeholder incomplete content", async () => {
+		const previousSummary = createCompleteCompactionSummary({
+			Requirements: "- Preserve previous requirement from t_20260530_005.",
+			"Critical Context": "- packages/coding-agent/src/core/compaction/utils.ts\n- d_20260530_010 remains relevant.",
+		});
+		const incompleteUpdate = createCompleteCompactionSummary({
+			Requirements: "- Add regression coverage for summary repair.",
+			"Critical Context": "- packages/coding-agent/src/core/compaction/compaction.ts",
+		});
+		mockSummarizationResponse(incompleteUpdate);
+
+		const result = await generateSummary(
+			[createUserMessage("Added repair regression coverage in compaction.test.ts.")],
+			{ reasoning: false } as any,
+			1000,
+			"test-api-key",
+			undefined,
+			undefined,
+			undefined,
+			previousSummary,
+		);
+
+		expect(validateCompactionSummarySchema(result).valid).toBe(true);
+		expect(result).toContain("- Add regression coverage for summary repair.");
+		expect(result).toContain("- Preserve previous requirement from t_20260530_005.");
+		expect(result).toContain("- packages/coding-agent/src/core/compaction/compaction.ts");
+		expect(result).toContain("- packages/coding-agent/src/core/compaction/utils.ts");
+		expect(result).toContain("- d_20260530_010 remains relevant.");
+	});
+
+	it("should not re-add previous section lines that are explicitly resolved", () => {
+		const previousSummary = createCompleteCompactionSummary({
+			Blockers: "- npm run check failing in packages/coding-agent/src/core/compaction/compaction.ts.",
+		});
+		const resolvedUpdate = createCompleteCompactionSummary({
+			Blockers: "- Resolved: npm run check now passes for packages/coding-agent/src/core/compaction/compaction.ts.",
+		});
+
+		const repaired = repairCompactionSummarySchema(resolvedUpdate, previousSummary);
+
+		expect(validateCompactionSummarySchema(repaired).valid).toBe(true);
+		expect(repaired).toContain(
+			"- Resolved: npm run check now passes for packages/coding-agent/src/core/compaction/compaction.ts.",
+		);
+		expect(repaired).not.toContain(
+			"- npm run check failing in packages/coding-agent/src/core/compaction/compaction.ts.",
+		);
+	});
+
+	it("should retain prior Critical Context when a generic completion line only shares its file path", () => {
+		const previousSummary = createCompleteCompactionSummary({
+			"Critical Context":
+				"- packages/coding-agent/src/core/compaction/compaction.ts contains ensureCompactionSummarySchema; preserve exact user constraints",
+		});
+		const genericCompletionUpdate = createCompleteCompactionSummary({
+			"Critical Context": "- Completed focused tests in packages/coding-agent/src/core/compaction/compaction.ts.",
+		});
+
+		const repaired = repairCompactionSummarySchema(genericCompletionUpdate, previousSummary);
+
+		expect(validateCompactionSummarySchema(repaired).valid).toBe(true);
+		expect(repaired).toContain(
+			"- Completed focused tests in packages/coding-agent/src/core/compaction/compaction.ts.",
+		);
+		expect(repaired).toContain(
+			"- packages/coding-agent/src/core/compaction/compaction.ts contains ensureCompactionSummarySchema; preserve exact user constraints",
+		);
+		expect(repaired).toContain("### Preserved From Previous Summary");
+	});
+
+	it("should validate generated compaction results before returning", async () => {
+		mockSummarizationResponse(`## Original Request / Goal
+- Implement deterministic summary repair.`);
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "kept-entry-id",
+			messagesToSummarize: [createUserMessage("Implement t_20260530_005 in compaction.ts")],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 1234,
+			fileOps: {
+				read: new Set(["packages/coding-agent/src/core/compaction/compaction.ts"]),
+				written: new Set(),
+				edited: new Set(),
+			},
+			settings: DEFAULT_COMPACTION_SETTINGS,
+		};
+
+		const result = await compact(preparation, { reasoning: false } as any, "test-api-key");
+
+		expect(validateCompactionSummarySchema(result.summary).valid).toBe(true);
+		expect(result.summary).toContain("## Requirements\n- (not captured)");
+		expect(result.summary).toContain(
+			"<read-files>\npackages/coding-agent/src/core/compaction/compaction.ts\n</read-files>",
+		);
+		expect(vi.mocked(completeSimple)).toHaveBeenCalledTimes(1);
+	});
+
+	it("should preserve previous summary sections when an update returns placeholders", async () => {
+		const previousSummary = createCompleteCompactionSummary({
+			Requirements: "- Preserve previous requirement from t_20260530_005.",
+			"Critical Context": "- packages/coding-agent/src/core/compaction/utils.ts",
+		});
+		const placeholderUpdate = createCompleteCompactionSummary({
+			Requirements: "- (not captured)",
+			"Progress / Current State": "### Done\n- [x] Added schema validation.\n\n### In Progress\n- [ ] Run checks.",
+			"Critical Context": "- (not captured)",
+		});
+		mockSummarizationResponse(placeholderUpdate);
+
+		const result = await generateSummary(
+			[createUserMessage("Validation added; run checks next.")],
+			{ reasoning: false } as any,
+			1000,
+			"test-api-key",
+			undefined,
+			undefined,
+			undefined,
+			previousSummary,
+		);
+
+		expect(validateCompactionSummarySchema(result).valid).toBe(true);
+		expect(result).toContain("- Preserve previous requirement from t_20260530_005.");
+		expect(result).toContain("- packages/coding-agent/src/core/compaction/utils.ts");
+		expect(result).toContain("- [x] Added schema validation.");
+		const summarizationCall = vi.mocked(completeSimple).mock.calls[0];
+		const promptText = (summarizationCall[1] as any).messages[0].content[0].text;
+		expect(promptText).toContain("<previous-summary>");
+		expect(promptText).toContain("Acceptance Criteria");
+	});
+});
 
 describe("Token calculation", () => {
 	it("should calculate total context tokens from usage", () => {
