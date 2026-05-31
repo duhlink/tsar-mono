@@ -15,8 +15,9 @@ import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { CompactionPreparation } from "../src/core/compaction/compaction.js";
 import * as compactionModule from "../src/core/compaction/index.js";
+import { createContinuationContractMessage } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
-import { SessionManager } from "../src/core/session-manager.js";
+import { createContinuationContractFromPath, type SessionEntry, SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
@@ -164,6 +165,12 @@ function createMockCompactionPreparation(firstKeptEntryId = "entry-1"): Compacti
 			keepRecentTokens: 20000,
 		},
 	};
+}
+
+function estimateContinuationContractTokens(pathEntries: SessionEntry[]): number {
+	const contract = createContinuationContractFromPath(pathEntries, "2025-01-01T00:00:00Z");
+	const message = createContinuationContractMessage(contract, "2025-01-01T00:00:00Z");
+	return estimateMockTokens({ role: "custom", content: message.content });
 }
 
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -430,17 +437,19 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		const firstUserId = sessionManager.appendMessage(firstUser);
 		sessionManager.appendMessage(staleAssistant);
-		sessionManager.appendMessage(retryUser);
+		const retryUserId = sessionManager.appendMessage(retryUser);
 		sessionManager.appendMessage(overflowAssistant);
 
 		session.agent.replaceMessages([firstUser, staleAssistant, retryUser, overflowAssistant]);
 
 		const postCompactionMessageTokens =
+			estimateContinuationContractTokens(sessionManager.getBranch(retryUserId)) +
 			estimateMockTokens({ role: "compactionSummary", summary: "compacted" }) +
 			estimateMockTokens(firstUser) +
 			estimateMockTokens(staleAssistant) +
 			estimateMockTokens(retryUser);
-		const fixedOverhead = retryLimit - postCompactionMessageTokens;
+		const retryFitMarginTokens = 1_000;
+		const fixedOverhead = retryLimit - postCompactionMessageTokens - retryFitMarginTokens;
 
 		vi.spyOn(compactionModule, "compact").mockResolvedValue({
 			summary: "compacted",

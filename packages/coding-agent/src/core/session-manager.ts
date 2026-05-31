@@ -27,6 +27,7 @@ import {
 	createCompactionSummaryMessage,
 	createContinuationContractMessage,
 	createCustomMessage,
+	isContinuationContractV1,
 } from "./messages.js";
 
 export const CURRENT_SESSION_VERSION = 3;
@@ -329,17 +330,31 @@ function hashVisibleUserText(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-function extractVisibleUserTextParts(entry: SessionEntry): string[] | undefined {
+interface VisibleUserContentSummary {
+	textParts: string[];
+	hasNonTextContent: boolean;
+}
+
+function extractVisibleUserContentSummary(entry: SessionEntry): VisibleUserContentSummary | undefined {
 	if (entry.type !== "message" || entry.message.role !== "user") {
 		return undefined;
 	}
 
 	const content = entry.message.content;
 	if (typeof content === "string") {
-		return [content];
+		return { textParts: [content], hasNonTextContent: false };
 	}
 
-	return content.filter((part): part is TextContent => part.type === "text").map((part) => part.text);
+	const textParts: string[] = [];
+	let hasNonTextContent = false;
+	for (const part of content) {
+		if (part.type === "text") {
+			textParts.push(part.text);
+		} else {
+			hasNonTextContent = true;
+		}
+	}
+	return { textParts, hasNonTextContent };
 }
 
 function createUserIntentEntry(
@@ -405,20 +420,28 @@ export function createContinuationContractFromPath(
 ): ContinuationContractV1 {
 	const userIntentLedger: ContinuationContractUserIntentEntry[] = [];
 	const skippedWhitespaceOnlyEntryIds: string[] = [];
+	const skippedNonTextOnlyEntryIds: string[] = [];
+	const omittedNonTextContentEntryIds: string[] = [];
 
 	for (const entry of path) {
-		const textParts = extractVisibleUserTextParts(entry);
-		if (!textParts) {
+		const contentSummary = extractVisibleUserContentSummary(entry);
+		if (!contentSummary) {
 			continue;
 		}
 
-		const rawText = textParts.join("");
-		if (rawText.trim().length === 0) {
+		const rawText = contentSummary.textParts.join("");
+		if (contentSummary.hasNonTextContent) {
+			omittedNonTextContentEntryIds.push(entry.id);
+			if (rawText.trim().length === 0) {
+				skippedNonTextOnlyEntryIds.push(entry.id);
+				continue;
+			}
+		} else if (rawText.trim().length === 0) {
 			skippedWhitespaceOnlyEntryIds.push(entry.id);
 			continue;
 		}
 
-		userIntentLedger.push(createUserIntentEntry(entry.id, rawText, textParts));
+		userIntentLedger.push(createUserIntentEntry(entry.id, rawText, contentSummary.textParts));
 	}
 
 	return {
@@ -429,6 +452,8 @@ export function createContinuationContractFromPath(
 			activePathLeafId: path[path.length - 1]?.id ?? null,
 			visibleUserEntryIds: userIntentLedger.map((entry) => entry.entryId),
 			skippedWhitespaceOnlyEntryIds,
+			skippedNonTextOnlyEntryIds,
+			omittedNonTextContentEntryIds,
 		},
 		rootRequest: userIntentLedger[0] ?? null,
 		userIntentLedger,
@@ -442,17 +467,6 @@ export function createContinuationContractFromPath(
 	};
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function isContinuationContractV1(value: unknown): value is ContinuationContractV1 {
-	if (!isRecord(value)) {
-		return false;
-	}
-	return value.version === 1 && isRecord(value.source) && Array.isArray(value.userIntentLedger);
-}
-
 function isContinuationContractEntry(entry: SessionEntry | undefined): entry is ContinuationContractEntry {
 	return (
 		entry?.type === "custom" &&
@@ -461,17 +475,21 @@ function isContinuationContractEntry(entry: SessionEntry | undefined): entry is 
 	);
 }
 
-function getLatestContinuationContractEntry(
+function getDirectContinuationContractEntry(
 	path: SessionEntry[],
-	beforeIndex: number,
+	compactionIndex: number,
+	compaction: CompactionEntry,
 ): ContinuationContractEntry | undefined {
-	for (let i = beforeIndex - 1; i >= 0; i--) {
-		const entry = path[i];
-		if (isContinuationContractEntry(entry)) {
-			return entry;
-		}
+	if (compactionIndex <= 0) {
+		return undefined;
 	}
-	return undefined;
+
+	const predecessor = path[compactionIndex - 1];
+	if (compaction.parentId !== predecessor?.id) {
+		return undefined;
+	}
+
+	return isContinuationContractEntry(predecessor) ? predecessor : undefined;
 }
 
 /**
@@ -537,7 +555,7 @@ export function buildSessionContext(
 
 	// Build messages and collect corresponding entries
 	// When there's a compaction, we need to:
-	// 1. Emit the latest active-path continuation contract first, if one exists
+	// 1. Emit a directly associated active-path continuation contract first, if one exists
 	// 2. Emit summary next (entry = compaction)
 	// 3. Emit kept messages (from firstKeptEntryId up to compaction)
 	// 4. Emit messages after compaction
@@ -558,7 +576,7 @@ export function buildSessionContext(
 	if (compaction) {
 		// Find compaction index in path
 		const compactionIdx = path.findIndex((e) => e.type === "compaction" && e.id === compaction.id);
-		const continuationContractEntry = getLatestContinuationContractEntry(path, compactionIdx);
+		const continuationContractEntry = getDirectContinuationContractEntry(path, compactionIdx, compaction);
 		if (continuationContractEntry?.data) {
 			messages.push(
 				createContinuationContractMessage(continuationContractEntry.data, continuationContractEntry.timestamp),

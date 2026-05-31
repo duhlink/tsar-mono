@@ -336,6 +336,56 @@ describe("buildSessionContext", () => {
 			expectUserText(ctx.messages, 4, "third");
 		});
 
+		it("does not reuse an older continuation contract for a later direct compaction", () => {
+			const session = SessionManager.inMemory();
+			session.appendMessage(createUserMessage("older requirement"));
+			session.appendMessage(createAssistantMessage("older response"));
+			session.appendContinuationContractFromActivePath();
+			const keptUserId = session.appendMessage(createUserMessage("new direct compaction request"));
+			session.appendMessage(createAssistantMessage("new response"));
+			session.appendCompaction("direct compaction without adjacent contract", keptUserId, 1000);
+
+			const ctx = session.buildSessionContext();
+			expect(ctx.messages.some(isContinuationContractMessage)).toBe(false);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["compactionSummary", "user", "assistant"]);
+			expect(summaryText(ctx.messages, 0)).toContain("direct compaction without adjacent contract");
+			expectUserText(ctx.messages, 1, "new direct compaction request");
+			expectAssistantText(ctx.messages, 2, "new response");
+		});
+
+		it("ignores malformed persisted continuation contracts directly before compaction", () => {
+			const malformedContractEntry: SessionEntry = {
+				type: "custom",
+				id: "3",
+				parentId: "2",
+				timestamp: "2025-01-01T00:00:00Z",
+				customType: CONTINUATION_CONTRACT_CUSTOM_TYPE,
+				data: {
+					version: 1,
+					source: {},
+					userIntentLedger: [{}],
+					requirements: [],
+					constraints: [],
+					acceptanceCriteria: [],
+					blockers: [],
+				},
+			};
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "kept request"),
+				msg("2", "1", "assistant", "kept response"),
+				malformedContractEntry,
+				compaction("4", "3", "summary after malformed persisted contract", "1"),
+			];
+
+			expect(() => buildSessionContext(entries)).not.toThrow();
+			const ctx = buildSessionContext(entries);
+			expect(ctx.messages.some(isContinuationContractMessage)).toBe(false);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["compactionSummary", "user", "assistant"]);
+			expect(summaryText(ctx.messages, 0)).toContain("summary after malformed persisted contract");
+			expectUserText(ctx.messages, 1, "kept request");
+			expectAssistantText(ctx.messages, 2, "kept response");
+		});
+
 		it("derives contract content only from normal visible user messages", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "Requirement: keep the visible user text"),
@@ -388,6 +438,49 @@ describe("buildSessionContext", () => {
 				omittedCharLength: 0,
 			});
 			expect(contract.rootRequest?.rawText).toBe(rawText);
+		});
+
+		it("accounts for non-text-only user messages without treating them as whitespace-only text", () => {
+			const imageOnlyPart: ImageContent = {
+				type: "image",
+				data: "IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT",
+				mimeType: "image/png",
+			};
+			const emptyTextImagePart: ImageContent = {
+				type: "image",
+				data: "EMPTY_TEXT_IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT",
+				mimeType: "image/png",
+			};
+			const whitespaceTextImagePart: ImageContent = {
+				type: "image",
+				data: "WHITESPACE_TEXT_IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT",
+				mimeType: "image/png",
+			};
+			const mixedImagePart: ImageContent = {
+				type: "image",
+				data: "MIXED_IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT",
+				mimeType: "image/png",
+			};
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "  \n\t  "),
+				userEntry("2", "1", [imageOnlyPart]),
+				userEntry("3", "2", [{ type: "text", text: "" }, emptyTextImagePart]),
+				userEntry("4", "3", [{ type: "text", text: "  \n\t  " }, whitespaceTextImagePart]),
+				userEntry("5", "4", [{ type: "text", text: "Visible " }, mixedImagePart, { type: "text", text: "text" }]),
+			];
+
+			const contract = createContinuationContractFromPath(entries, "2025-01-01T00:00:00Z");
+			expect(contract.userIntentLedger.map((entry) => entry.entryId)).toEqual(["5"]);
+			expect(contract.userIntentLedger.map((entry) => entry.rawText)).toEqual(["Visible text"]);
+			expect(contract.source.skippedWhitespaceOnlyEntryIds).toEqual(["1"]);
+			expect(contract.source.skippedWhitespaceOnlyEntryIds).not.toEqual(expect.arrayContaining(["3", "4"]));
+			expect(contract.source.skippedNonTextOnlyEntryIds).toEqual(["2", "3", "4"]);
+			expect(contract.source.omittedNonTextContentEntryIds).toEqual(["2", "3", "4", "5"]);
+			const serializedContract = JSON.stringify(contract);
+			expect(serializedContract).not.toContain("IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT");
+			expect(serializedContract).not.toContain("EMPTY_TEXT_IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT");
+			expect(serializedContract).not.toContain("WHITESPACE_TEXT_IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT");
+			expect(serializedContract).not.toContain("MIXED_IMAGE_BYTES_SHOULD_NOT_APPEAR_IN_CONTRACT");
 		});
 	});
 
