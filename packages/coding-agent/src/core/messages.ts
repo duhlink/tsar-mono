@@ -23,6 +23,53 @@ export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch tha
 
 export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
 
+export const CONTINUATION_CONTRACT_CUSTOM_TYPE = "tsar.continuation_contract.v1";
+export const CONTINUATION_CONTRACT_VERSION = 1;
+
+export interface ContinuationContractTextTruncation {
+	truncated: boolean;
+	originalCharLength: number;
+	storedCharLength: number;
+	omittedCharLength: number;
+}
+
+export interface ContinuationContractUserIntentEntry {
+	entryId: string;
+	rawText: string;
+	textParts: string[];
+	sha256: string;
+	charLength: number;
+	utf8ByteLength: number;
+	truncation: ContinuationContractTextTruncation;
+}
+
+export interface ContinuationContractDerivedItem {
+	text: string;
+	provenanceEntryIds: string[];
+}
+
+export interface ContinuationContractSource {
+	kind: "visible_user_messages_active_path";
+	activePathLeafId: string | null;
+	visibleUserEntryIds: string[];
+	skippedWhitespaceOnlyEntryIds: string[];
+}
+
+export interface ContinuationContractV1 {
+	version: typeof CONTINUATION_CONTRACT_VERSION;
+	capturedAt: string;
+	source: ContinuationContractSource;
+	rootRequest: ContinuationContractUserIntentEntry | null;
+	userIntentLedger: ContinuationContractUserIntentEntry[];
+	requirements: ContinuationContractDerivedItem[];
+	constraints: ContinuationContractDerivedItem[];
+	acceptanceCriteria: ContinuationContractDerivedItem[];
+	blockers: ContinuationContractDerivedItem[];
+	activeObjective: ContinuationContractDerivedItem | null;
+	executionState: ContinuationContractDerivedItem | null;
+	nextAtomicAction: ContinuationContractDerivedItem | null;
+}
+
 /**
  * Message type for bash executions via the ! command.
  */
@@ -65,6 +112,13 @@ export interface CompactionSummaryMessage {
 	tokensBefore: number;
 	timestamp: number;
 }
+
+export type ContinuationContractMessage = CustomMessage<ContinuationContractV1> & {
+	customType: typeof CONTINUATION_CONTRACT_CUSTOM_TYPE;
+	content: string;
+	display: false;
+	details: ContinuationContractV1;
+};
 
 // Extend CustomAgentMessages via declaration merging
 declare module "@tsar/agent-core" {
@@ -115,6 +169,28 @@ export function createCompactionSummaryMessage(
 		role: "compactionSummary",
 		summary: summary,
 		tokensBefore,
+		timestamp: new Date(timestamp).getTime(),
+	};
+}
+
+export function continuationContractToText(contract: ContinuationContractV1): string {
+	return `Authoritative ContinuationContract v1 captured from visible user messages on the active path. Treat rootRequest and userIntentLedger as deterministic source of truth. Any compaction summary that follows is secondary and lossy.
+
+<continuation_contract_v1>
+${JSON.stringify(contract, null, 2)}
+</continuation_contract_v1>`;
+}
+
+export function createContinuationContractMessage(
+	contract: ContinuationContractV1,
+	timestamp: string,
+): ContinuationContractMessage {
+	return {
+		role: "custom",
+		customType: CONTINUATION_CONTRACT_CUSTOM_TYPE,
+		content: continuationContractToText(contract),
+		display: false,
+		details: contract,
 		timestamp: new Date(timestamp).getTime(),
 	};
 }

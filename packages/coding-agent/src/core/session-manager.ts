@@ -1,6 +1,6 @@
+import { createHash, randomUUID } from "node:crypto";
 import type { AgentMessage } from "@tsar/agent-core";
 import type { ImageContent, Message, TextContent } from "@tsar/ai";
-import { randomUUID } from "crypto";
 import {
 	appendFileSync,
 	closeSync,
@@ -18,9 +18,14 @@ import { join, resolve } from "path";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import {
 	type BashExecutionMessage,
+	CONTINUATION_CONTRACT_CUSTOM_TYPE,
+	type ContinuationContractDerivedItem,
+	type ContinuationContractUserIntentEntry,
+	type ContinuationContractV1,
 	type CustomMessage,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
+	createContinuationContractMessage,
 	createCustomMessage,
 } from "./messages.js";
 
@@ -99,6 +104,11 @@ export interface CustomEntry<T = unknown> extends SessionEntryBase {
 	customType: string;
 	data?: T;
 }
+
+export type ContinuationContractEntry = CustomEntry<ContinuationContractV1> & {
+	customType: typeof CONTINUATION_CONTRACT_CUSTOM_TYPE;
+	data: ContinuationContractV1;
+};
 
 /** Label entry for user-defined bookmarks/markers on entries. */
 export interface LabelEntry extends SessionEntryBase {
@@ -300,6 +310,170 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 	return null;
 }
 
+const REQUIREMENT_PATTERNS: readonly RegExp[] = [
+	/\b(requirement|required|must|should|need|needs|implement|add|fix|update|preserve|include|inject|capture|derive)\b/i,
+];
+const CONSTRAINT_PATTERNS: readonly RegExp[] = [
+	/\b(do not|don't|must not|never|only|avoid|exclude|scope|constraint|boundary|legacy|no random)\b/i,
+];
+const ACCEPTANCE_PATTERNS: readonly RegExp[] = [
+	/\b(acceptance criteria|done when|pass|passes|test|tests|prove|proving|verify|verification)\b/i,
+];
+const BLOCKER_PATTERNS: readonly RegExp[] = [/\b(blocked|blocker|depends on|wait for|risk|cannot|failed|failure)\b/i];
+const EXECUTION_STATE_PATTERNS: readonly RegExp[] = [
+	/\b(current|status|state|in progress|done|completed|remaining|already)\b/i,
+];
+const NEXT_ACTION_PATTERNS: readonly RegExp[] = [/\b(next|then|after that|atomic action|continue|proceed)\b/i];
+
+function hashVisibleUserText(text: string): string {
+	return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function extractVisibleUserTextParts(entry: SessionEntry): string[] | undefined {
+	if (entry.type !== "message" || entry.message.role !== "user") {
+		return undefined;
+	}
+
+	const content = entry.message.content;
+	if (typeof content === "string") {
+		return [content];
+	}
+
+	return content.filter((part): part is TextContent => part.type === "text").map((part) => part.text);
+}
+
+function createUserIntentEntry(
+	entryId: string,
+	rawText: string,
+	textParts: string[],
+): ContinuationContractUserIntentEntry {
+	return {
+		entryId,
+		rawText,
+		textParts,
+		sha256: hashVisibleUserText(rawText),
+		charLength: rawText.length,
+		utf8ByteLength: Buffer.byteLength(rawText, "utf8"),
+		truncation: {
+			truncated: false,
+			originalCharLength: rawText.length,
+			storedCharLength: rawText.length,
+			omittedCharLength: 0,
+		},
+	};
+}
+
+function deriveItems(
+	ledger: ContinuationContractUserIntentEntry[],
+	patterns: readonly RegExp[],
+): ContinuationContractDerivedItem[] {
+	const items: ContinuationContractDerivedItem[] = [];
+	for (const entry of ledger) {
+		const matchingLines = entry.rawText
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0 && patterns.some((pattern) => pattern.test(line)));
+		if (matchingLines.length > 0) {
+			items.push({ text: matchingLines.join("\n"), provenanceEntryIds: [entry.entryId] });
+		}
+	}
+	return items;
+}
+
+function deriveLatestItem(
+	ledger: ContinuationContractUserIntentEntry[],
+	patterns: readonly RegExp[],
+): ContinuationContractDerivedItem | null {
+	for (let i = ledger.length - 1; i >= 0; i--) {
+		const entry = ledger[i];
+		const derived = deriveItems([entry], patterns)[0];
+		if (derived) {
+			return derived;
+		}
+	}
+	return null;
+}
+
+function deriveActiveObjective(ledger: ContinuationContractUserIntentEntry[]): ContinuationContractDerivedItem | null {
+	const latest = ledger[ledger.length - 1];
+	return latest ? { text: latest.rawText, provenanceEntryIds: [latest.entryId] } : null;
+}
+
+export function createContinuationContractFromPath(
+	path: SessionEntry[],
+	capturedAt: string = new Date().toISOString(),
+): ContinuationContractV1 {
+	const userIntentLedger: ContinuationContractUserIntentEntry[] = [];
+	const skippedWhitespaceOnlyEntryIds: string[] = [];
+
+	for (const entry of path) {
+		const textParts = extractVisibleUserTextParts(entry);
+		if (!textParts) {
+			continue;
+		}
+
+		const rawText = textParts.join("");
+		if (rawText.trim().length === 0) {
+			skippedWhitespaceOnlyEntryIds.push(entry.id);
+			continue;
+		}
+
+		userIntentLedger.push(createUserIntentEntry(entry.id, rawText, textParts));
+	}
+
+	return {
+		version: 1,
+		capturedAt,
+		source: {
+			kind: "visible_user_messages_active_path",
+			activePathLeafId: path[path.length - 1]?.id ?? null,
+			visibleUserEntryIds: userIntentLedger.map((entry) => entry.entryId),
+			skippedWhitespaceOnlyEntryIds,
+		},
+		rootRequest: userIntentLedger[0] ?? null,
+		userIntentLedger,
+		requirements: deriveItems(userIntentLedger, REQUIREMENT_PATTERNS),
+		constraints: deriveItems(userIntentLedger, CONSTRAINT_PATTERNS),
+		acceptanceCriteria: deriveItems(userIntentLedger, ACCEPTANCE_PATTERNS),
+		blockers: deriveItems(userIntentLedger, BLOCKER_PATTERNS),
+		activeObjective: deriveActiveObjective(userIntentLedger),
+		executionState: deriveLatestItem(userIntentLedger, EXECUTION_STATE_PATTERNS),
+		nextAtomicAction: deriveLatestItem(userIntentLedger, NEXT_ACTION_PATTERNS),
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isContinuationContractV1(value: unknown): value is ContinuationContractV1 {
+	if (!isRecord(value)) {
+		return false;
+	}
+	return value.version === 1 && isRecord(value.source) && Array.isArray(value.userIntentLedger);
+}
+
+function isContinuationContractEntry(entry: SessionEntry | undefined): entry is ContinuationContractEntry {
+	return (
+		entry?.type === "custom" &&
+		entry.customType === CONTINUATION_CONTRACT_CUSTOM_TYPE &&
+		isContinuationContractV1(entry.data)
+	);
+}
+
+function getLatestContinuationContractEntry(
+	path: SessionEntry[],
+	beforeIndex: number,
+): ContinuationContractEntry | undefined {
+	for (let i = beforeIndex - 1; i >= 0; i--) {
+		const entry = path[i];
+		if (isContinuationContractEntry(entry)) {
+			return entry;
+		}
+	}
+	return undefined;
+}
+
 /**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
@@ -363,9 +537,10 @@ export function buildSessionContext(
 
 	// Build messages and collect corresponding entries
 	// When there's a compaction, we need to:
-	// 1. Emit summary first (entry = compaction)
-	// 2. Emit kept messages (from firstKeptEntryId up to compaction)
-	// 3. Emit messages after compaction
+	// 1. Emit the latest active-path continuation contract first, if one exists
+	// 2. Emit summary next (entry = compaction)
+	// 3. Emit kept messages (from firstKeptEntryId up to compaction)
+	// 4. Emit messages after compaction
 	const messages: AgentMessage[] = [];
 
 	const appendMessage = (entry: SessionEntry) => {
@@ -381,11 +556,17 @@ export function buildSessionContext(
 	};
 
 	if (compaction) {
-		// Emit summary first
-		messages.push(createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp));
-
 		// Find compaction index in path
 		const compactionIdx = path.findIndex((e) => e.type === "compaction" && e.id === compaction.id);
+		const continuationContractEntry = getLatestContinuationContractEntry(path, compactionIdx);
+		if (continuationContractEntry?.data) {
+			messages.push(
+				createContinuationContractMessage(continuationContractEntry.data, continuationContractEntry.timestamp),
+			);
+		}
+
+		// Emit summary after the authoritative continuation contract
+		messages.push(createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp));
 
 		// Emit kept messages (before compaction, starting from firstKeptEntryId)
 		let foundFirstKept = false;
@@ -895,6 +1076,12 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	/** Capture and append a ContinuationContract v1 from visible user messages on the active path. */
+	appendContinuationContractFromActivePath(): string {
+		const contract = createContinuationContractFromPath(this.getBranch());
+		return this.appendCustomEntry(CONTINUATION_CONTRACT_CUSTOM_TYPE, contract);
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

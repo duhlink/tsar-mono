@@ -1,39 +1,73 @@
+import { createHash } from "node:crypto";
+import type { AgentMessage } from "@tsar/agent-core";
+import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@tsar/ai";
 import { describe, expect, it } from "vitest";
+import { CONTINUATION_CONTRACT_CUSTOM_TYPE, type ContinuationContractMessage } from "../../src/core/messages.js";
 import {
 	type BranchSummaryEntry,
 	buildSessionContext,
 	type CompactionEntry,
+	type CustomMessageEntry,
+	createContinuationContractFromPath,
 	type ModelChangeEntry,
 	type SessionEntry,
+	SessionManager,
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "../../src/core/session-manager.js";
 
-function msg(id: string, parentId: string | null, role: "user" | "assistant", text: string): SessionMessageEntry {
-	const base = { type: "message" as const, id, parentId, timestamp: "2025-01-01T00:00:00Z" };
-	if (role === "user") {
-		return { ...base, message: { role, content: text, timestamp: 1 } };
-	}
+function createUserMessage(content: string | (TextContent | ImageContent)[], timestamp = 1): UserMessage {
+	return { role: "user", content, timestamp };
+}
+
+function createAssistantMessage(text: string, timestamp = 1): AssistantMessage {
 	return {
-		...base,
-		message: {
-			role,
-			content: [{ type: "text", text }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-test",
-			usage: {
-				input: 1,
-				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 2,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: 1,
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-test",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
+		stopReason: "stop",
+		timestamp,
 	};
+}
+
+function msg(id: string, parentId: string | null, role: "user" | "assistant", text: string): SessionMessageEntry {
+	return {
+		type: "message",
+		id,
+		parentId,
+		timestamp: "2025-01-01T00:00:00Z",
+		message: role === "user" ? createUserMessage(text) : createAssistantMessage(text),
+	};
+}
+
+function userEntry(
+	id: string,
+	parentId: string | null,
+	content: string | (TextContent | ImageContent)[],
+): SessionMessageEntry {
+	return { type: "message", id, parentId, timestamp: "2025-01-01T00:00:00Z", message: createUserMessage(content) };
+}
+
+function toolResultEntry(id: string, parentId: string | null, text: string): SessionMessageEntry {
+	const message: ToolResultMessage<unknown> = {
+		role: "toolResult",
+		toolCallId: `${id}-call`,
+		toolName: "read",
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: 1,
+	};
+	return { type: "message", id, parentId, timestamp: "2025-01-01T00:00:00Z", message };
 }
 
 function compaction(id: string, parentId: string | null, summary: string, firstKeptEntryId: string): CompactionEntry {
@@ -52,12 +86,92 @@ function branchSummary(id: string, parentId: string | null, summary: string, fro
 	return { type: "branch_summary", id, parentId, timestamp: "2025-01-01T00:00:00Z", summary, fromId };
 }
 
+function customMessage(id: string, parentId: string | null, content: string, display = false): CustomMessageEntry {
+	return {
+		type: "custom_message",
+		id,
+		parentId,
+		timestamp: "2025-01-01T00:00:00Z",
+		customType: "test.custom",
+		content,
+		display,
+	};
+}
+
 function thinkingLevel(id: string, parentId: string | null, level: string): ThinkingLevelChangeEntry {
 	return { type: "thinking_level_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", thinkingLevel: level };
 }
 
 function modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
+}
+
+function isTextContent(content: TextContent | ImageContent): content is TextContent {
+	return content.type === "text";
+}
+
+function messageContentText(content: string | (TextContent | ImageContent)[]): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	return content
+		.filter(isTextContent)
+		.map((part) => part.text)
+		.join("");
+}
+
+function requireMessage(messages: AgentMessage[], index: number): AgentMessage {
+	const message = messages[index];
+	if (!message) {
+		throw new Error(`Expected message at index ${index}`);
+	}
+	return message;
+}
+
+function expectUserText(messages: AgentMessage[], index: number, expected: string): void {
+	const message = requireMessage(messages, index);
+	expect(message.role).toBe("user");
+	if (message.role !== "user") {
+		throw new Error(`Expected user message at index ${index}`);
+	}
+	expect(messageContentText(message.content)).toBe(expected);
+}
+
+function expectAssistantText(messages: AgentMessage[], index: number, expected: string): void {
+	const message = requireMessage(messages, index);
+	expect(message.role).toBe("assistant");
+	if (message.role !== "assistant") {
+		throw new Error(`Expected assistant message at index ${index}`);
+	}
+	const text = message.content
+		.filter((part): part is TextContent => part.type === "text")
+		.map((part) => part.text)
+		.join("");
+	expect(text).toBe(expected);
+}
+
+function summaryText(messages: AgentMessage[], index: number): string {
+	const message = requireMessage(messages, index);
+	if (message.role !== "compactionSummary" && message.role !== "branchSummary") {
+		throw new Error(`Expected summary message at index ${index}, got ${message.role}`);
+	}
+	return message.summary;
+}
+
+function isContinuationContractMessage(message: AgentMessage): message is ContinuationContractMessage {
+	return message.role === "custom" && message.customType === CONTINUATION_CONTRACT_CUSTOM_TYPE;
+}
+
+function getContinuationContractMessage(messages: AgentMessage[]): ContinuationContractMessage {
+	const message = messages.find(isContinuationContractMessage);
+	if (!message) {
+		throw new Error("Expected continuation contract message");
+	}
+	return message;
+}
+
+function sha256(text: string): string {
+	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 describe("buildSessionContext", () => {
@@ -73,7 +187,7 @@ describe("buildSessionContext", () => {
 			const entries: SessionEntry[] = [msg("1", null, "user", "hello")];
 			const ctx = buildSessionContext(entries);
 			expect(ctx.messages).toHaveLength(1);
-			expect(ctx.messages[0].role).toBe("user");
+			expect(ctx.messages[0]?.role).toBe("user");
 		});
 
 		it("simple conversation", () => {
@@ -118,7 +232,7 @@ describe("buildSessionContext", () => {
 	});
 
 	describe("with compaction", () => {
-		it("includes summary before kept messages", () => {
+		it("includes summary before kept messages for legacy sessions without a contract", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "first"),
 				msg("2", "1", "assistant", "response1"),
@@ -130,13 +244,13 @@ describe("buildSessionContext", () => {
 			];
 			const ctx = buildSessionContext(entries);
 
-			// Should have: summary + kept (3,4) + after (6,7) = 5 messages
+			// Legacy sessions still have: summary + kept (3,4) + after (6,7) = 5 messages.
 			expect(ctx.messages).toHaveLength(5);
-			expect((ctx.messages[0] as any).summary).toContain("Summary of first two turns");
-			expect((ctx.messages[1] as any).content).toBe("second");
-			expect((ctx.messages[2] as any).content[0].text).toBe("response2");
-			expect((ctx.messages[3] as any).content).toBe("third");
-			expect((ctx.messages[4] as any).content[0].text).toBe("response3");
+			expect(summaryText(ctx.messages, 0)).toContain("Summary of first two turns");
+			expectUserText(ctx.messages, 1, "second");
+			expectAssistantText(ctx.messages, 2, "response2");
+			expectUserText(ctx.messages, 3, "third");
+			expectAssistantText(ctx.messages, 4, "response3");
 		});
 
 		it("handles compaction keeping from first message", () => {
@@ -150,7 +264,7 @@ describe("buildSessionContext", () => {
 
 			// Summary + all messages (1,2,4)
 			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[0] as any).summary).toContain("Empty summary");
+			expect(summaryText(ctx.messages, 0)).toContain("Empty summary");
 		});
 
 		it("multiple compactions uses latest", () => {
@@ -167,7 +281,113 @@ describe("buildSessionContext", () => {
 
 			// Should use second summary, keep from 4
 			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[0] as any).summary).toContain("Second summary");
+			expect(summaryText(ctx.messages, 0)).toContain("Second summary");
+		});
+	});
+
+	describe("with continuation contracts", () => {
+		it("captures visible user messages from the active path and excludes sibling branches", () => {
+			const session = SessionManager.inMemory();
+			const rootUserId = session.appendMessage(createUserMessage("root requirement"));
+			const sharedAssistantId = session.appendMessage(createAssistantMessage("shared response"));
+			const activeUserId = session.appendMessage(createUserMessage("active branch requirement"));
+			const activeAssistantId = session.appendMessage(createAssistantMessage("active response"));
+
+			session.branch(sharedAssistantId);
+			session.appendMessage(createUserMessage("abandoned branch requirement must not appear"));
+			session.appendMessage(createAssistantMessage("abandoned response"));
+
+			session.branch(activeAssistantId);
+			session.appendContinuationContractFromActivePath();
+			session.appendCompaction("lossy active summary", activeUserId, 1000);
+
+			const ctx = session.buildSessionContext();
+			const contract = getContinuationContractMessage(ctx.messages).details;
+			expect(contract.userIntentLedger.map((entry) => entry.entryId)).toEqual([rootUserId, activeUserId]);
+			expect(contract.userIntentLedger.map((entry) => entry.rawText)).toEqual([
+				"root requirement",
+				"active branch requirement",
+			]);
+			expect(JSON.stringify(contract)).not.toContain("abandoned branch requirement");
+		});
+
+		it("injects continuation contract before compaction summary before kept and after messages", () => {
+			const session = SessionManager.inMemory();
+			session.appendMessage(createUserMessage("first"));
+			session.appendMessage(createAssistantMessage("response1"));
+			const keptUserId = session.appendMessage(createUserMessage("second"));
+			session.appendMessage(createAssistantMessage("response2"));
+			session.appendContinuationContractFromActivePath();
+			session.appendCompaction("Summary of first two turns", keptUserId, 1000);
+			session.appendMessage(createUserMessage("third"));
+
+			const ctx = session.buildSessionContext();
+			expect(ctx.messages.map((message) => message.role)).toEqual([
+				"custom",
+				"compactionSummary",
+				"user",
+				"assistant",
+				"user",
+			]);
+			expect(isContinuationContractMessage(requireMessage(ctx.messages, 0))).toBe(true);
+			expect(summaryText(ctx.messages, 1)).toContain("Summary of first two turns");
+			expectUserText(ctx.messages, 2, "second");
+			expectAssistantText(ctx.messages, 3, "response2");
+			expectUserText(ctx.messages, 4, "third");
+		});
+
+		it("derives contract content only from normal visible user messages", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "Requirement: keep the visible user text"),
+				msg("2", "1", "assistant", "Requirement: assistant text must not appear"),
+				toolResultEntry("3", "2", "Requirement: tool result text must not appear"),
+				customMessage("4", "3", "Requirement: hidden custom text must not appear", false),
+				branchSummary("5", "4", "Requirement: branch summary text must not appear", "2"),
+			];
+
+			const contract = createContinuationContractFromPath(entries, "2025-01-01T00:00:00Z");
+			expect(contract.userIntentLedger.map((entry) => entry.rawText)).toEqual([
+				"Requirement: keep the visible user text",
+			]);
+
+			const serializedContract = JSON.stringify(contract);
+			expect(serializedContract).toContain("Requirement: keep the visible user text");
+			expect(serializedContract).not.toContain("assistant text must not appear");
+			expect(serializedContract).not.toContain("tool result text must not appear");
+			expect(serializedContract).not.toContain("hidden custom text must not appear");
+			expect(serializedContract).not.toContain("branch summary text must not appear");
+		});
+
+		it("retains exact raw text and deterministic metadata for captured user messages", () => {
+			const rawText = "  leading spaces\n# Heading: **bold** `code` — 雪\ntrailing spaces  ";
+			const firstPart = "  leading spaces\n";
+			const secondPart = "# Heading: **bold** `code` — 雪\ntrailing spaces  ";
+			const imagePart: ImageContent = { type: "image", data: "AAAA", mimeType: "image/png" };
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "  \n\t  "),
+				userEntry("2", "1", [{ type: "text", text: firstPart }, imagePart, { type: "text", text: secondPart }]),
+			];
+
+			const contract = createContinuationContractFromPath(entries, "2025-01-01T00:00:00Z");
+			expect(contract.userIntentLedger).toHaveLength(1);
+			const entry = contract.userIntentLedger[0];
+			if (!entry) {
+				throw new Error("Expected one captured user intent entry");
+			}
+
+			expect(entry.entryId).toBe("2");
+			expect(entry.rawText).toBe(rawText);
+			expect(entry.textParts).toEqual([firstPart, secondPart]);
+			expect(entry.charLength).toBe(rawText.length);
+			expect(entry.utf8ByteLength).toBe(Buffer.byteLength(rawText, "utf8"));
+			expect(entry.sha256).toBe(sha256(rawText));
+			expect(entry.truncation).toEqual({
+				truncated: false,
+				originalCharLength: rawText.length,
+				storedCharLength: rawText.length,
+				omittedCharLength: 0,
+			});
+			expect(contract.rootRequest?.rawText).toBe(rawText);
 		});
 	});
 
@@ -185,11 +405,11 @@ describe("buildSessionContext", () => {
 
 			const ctxA = buildSessionContext(entries, "3");
 			expect(ctxA.messages).toHaveLength(3);
-			expect((ctxA.messages[2] as any).content).toBe("branch A");
+			expectUserText(ctxA.messages, 2, "branch A");
 
 			const ctxB = buildSessionContext(entries, "4");
 			expect(ctxB.messages).toHaveLength(3);
-			expect((ctxB.messages[2] as any).content).toBe("branch B");
+			expectUserText(ctxB.messages, 2, "branch B");
 		});
 
 		it("includes branch summary in path", () => {
@@ -203,8 +423,8 @@ describe("buildSessionContext", () => {
 			const ctx = buildSessionContext(entries, "5");
 
 			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[2] as any).summary).toContain("Summary of abandoned work");
-			expect((ctx.messages[3] as any).content).toBe("new direction");
+			expect(summaryText(ctx.messages, 2)).toContain("Summary of abandoned work");
+			expectUserText(ctx.messages, 3, "new direction");
 		});
 
 		it("complex tree with multiple branches and compaction", () => {
@@ -231,20 +451,20 @@ describe("buildSessionContext", () => {
 			// Main path to 7: summary + kept(3,4) + after(6,7)
 			const ctxMain = buildSessionContext(entries, "7");
 			expect(ctxMain.messages).toHaveLength(5);
-			expect((ctxMain.messages[0] as any).summary).toContain("Compacted history");
-			expect((ctxMain.messages[1] as any).content).toBe("q2");
-			expect((ctxMain.messages[2] as any).content[0].text).toBe("r2");
-			expect((ctxMain.messages[3] as any).content).toBe("q3");
-			expect((ctxMain.messages[4] as any).content[0].text).toBe("r3");
+			expect(summaryText(ctxMain.messages, 0)).toContain("Compacted history");
+			expectUserText(ctxMain.messages, 1, "q2");
+			expectAssistantText(ctxMain.messages, 2, "r2");
+			expectUserText(ctxMain.messages, 3, "q3");
+			expectAssistantText(ctxMain.messages, 4, "r3");
 
 			// Branch path to 11: 1,2,3 + branch_summary + 11
 			const ctxBranch = buildSessionContext(entries, "11");
 			expect(ctxBranch.messages).toHaveLength(5);
-			expect((ctxBranch.messages[0] as any).content).toBe("start");
-			expect((ctxBranch.messages[1] as any).content[0].text).toBe("r1");
-			expect((ctxBranch.messages[2] as any).content).toBe("q2");
-			expect((ctxBranch.messages[3] as any).summary).toContain("Tried wrong approach");
-			expect((ctxBranch.messages[4] as any).content).toBe("better approach");
+			expectUserText(ctxBranch.messages, 0, "start");
+			expectAssistantText(ctxBranch.messages, 1, "r1");
+			expectUserText(ctxBranch.messages, 2, "q2");
+			expect(summaryText(ctxBranch.messages, 3)).toContain("Tried wrong approach");
+			expectUserText(ctxBranch.messages, 4, "better approach");
 		});
 	});
 

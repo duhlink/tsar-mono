@@ -1681,6 +1681,7 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
+			this.sessionManager.appendContinuationContractFromActivePath();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
@@ -2005,6 +2006,7 @@ export class AgentSession {
 			if (retryCompactionParentId !== undefined) {
 				this.sessionManager.branch(retryCompactionParentId);
 			}
+			this.sessionManager.appendContinuationContractFromActivePath();
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
