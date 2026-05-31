@@ -1,3 +1,5 @@
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@tsar/agent-core";
 import type { AssistantMessage } from "@tsar/ai";
 import { Container } from "@tsar/tui";
@@ -43,6 +45,13 @@ type SubmitActionCommandContext = ActionCommandContext & {
 	};
 	handleActionCommand: (text: string) => Promise<void>;
 };
+
+const CODING_AGENT_PACKAGE_JSON_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+
+function getOpenablePackageJsonActionPath(): string {
+	const relativePath = path.relative(process.cwd(), CODING_AGENT_PACKAGE_JSON_PATH);
+	return relativePath.length > 0 ? relativePath : ".";
+}
 
 const handleActionCommand = Reflect.get(InteractiveMode.prototype, "handleActionCommand") as (
 	this: ActionCommandContext,
@@ -251,45 +260,50 @@ describe("InteractiveMode /action execution", () => {
 	test("copies paths and opens local paths through injected services", async () => {
 		const openPath = vi.fn().mockResolvedValue(true);
 		const context = createActionContext({ openPath });
+		const openablePackageJsonPath = getOpenablePackageJsonActionPath();
 		const copyPathId = registerSingleAction(
 			context,
-			descriptor("copy-path", "copy path", "packages/coding-agent/package.json", "copy-path"),
+			descriptor("copy-path", "copy path", openablePackageJsonPath, "copy-path"),
 		);
 		const openPathId = registerSingleAction(
 			context,
-			descriptor("open-path", "open path", "packages/coding-agent/package.json", "open-path"),
+			descriptor("open-path", "open path", openablePackageJsonPath, "open-path"),
 		);
 
 		await handleActionCommand.call(context, `/action ${copyPathId}`);
 		await handleActionCommand.call(context, `/action ${openPathId}`);
 
-		expect(context.actionServices.copyToClipboard).toHaveBeenCalledWith("packages/coding-agent/package.json");
-		expect(openPath).toHaveBeenCalledWith(expect.stringContaining("packages/coding-agent/package.json"));
+		expect(context.actionServices.copyToClipboard).toHaveBeenCalledWith(openablePackageJsonPath);
+		expect(openPath).toHaveBeenCalledWith(CODING_AGENT_PACKAGE_JSON_PATH);
 	});
 
 	test("falls back to copying open-path payloads when no opener succeeds", async () => {
+		const openablePackageJsonPath = getOpenablePackageJsonActionPath();
 		const context = createActionContext({ openPath: vi.fn().mockResolvedValue(false) });
-		const id = registerSingleAction(
-			context,
-			descriptor("open-path", "open path", "packages/coding-agent/package.json"),
-		);
+		const id = registerSingleAction(context, descriptor("open-path", "open path", openablePackageJsonPath));
 
 		await handleActionCommand.call(context, `/action ${id}`);
 
-		expect(context.actionServices.copyToClipboard).toHaveBeenCalledWith("packages/coding-agent/package.json");
+		expect(context.actionServices.copyToClipboard).toHaveBeenCalledWith(openablePackageJsonPath);
 		expect(context.showStatus).toHaveBeenCalledWith(expect.stringContaining("Path opener unavailable"));
 	});
 
 	test("rejects malformed, unknown, and non-local open-path actions", async () => {
 		const context = createActionContext({ openPath: vi.fn().mockResolvedValue(true) });
-		const invalidPathId = registerSingleAction(
-			context,
-			descriptor("open-path", "open path", "https://example.com/not-local"),
+		const invalidPathIds = [
+			"https://example.com/not-local",
+			"file:///tmp/not-local",
+			"//example.com/not-local",
+			"package.json\0",
+		].map((payload, index) =>
+			registerSingleAction(context, descriptor("open-path", "open path", payload, `invalid-path-${index}`)),
 		);
 
 		await handleActionCommand.call(context, "/action nope");
 		await handleActionCommand.call(context, "/action 9999");
-		await handleActionCommand.call(context, `/action ${invalidPathId}`);
+		for (const invalidPathId of invalidPathIds) {
+			await handleActionCommand.call(context, `/action ${invalidPathId}`);
+		}
 
 		expect(context.showError).toHaveBeenCalledWith("Usage: /action <id>");
 		expect(context.showError).toHaveBeenCalledWith("Unknown action id: 9999");
