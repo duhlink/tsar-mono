@@ -64,6 +64,7 @@ interface MockEstimateMessage {
 }
 
 const IMAGE_BLOCK_CHAR_ESTIMATE = 4800;
+const POST_COMPACTION_TEST_DELAY_MS = 100;
 
 function calculateMockContextTokens(usage: MockUsage): number {
 	return usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
@@ -255,6 +256,285 @@ describe("AgentSession auto-compaction queue resume", () => {
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true });
 		}
+	});
+
+	function seedAssistantTail(): string {
+		const model = session.model!;
+		const baseTimestamp = Date.now();
+		const userMessage = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "continue this task" }],
+			timestamp: baseTimestamp,
+		};
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "partial work before compaction" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 10,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 20,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: baseTimestamp + 1,
+		};
+
+		const firstEntryId = sessionManager.appendMessage(userMessage);
+		sessionManager.appendMessage(assistantMessage);
+		session.agent.replaceMessages([userMessage, assistantMessage]);
+		return firstEntryId;
+	}
+
+	it("should keep manual compact idle even when threshold auto-continuation is enabled", async () => {
+		session.setCompactionAutoContinueAfterThreshold(true);
+		seedAssistantTail();
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const compactionEvents: Array<{ willAutoContinue?: boolean; reason: string }> = [];
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEvents.push({ reason: event.reason, willAutoContinue: event.willAutoContinue });
+			}
+		});
+
+		await session.compact();
+		await vi.advanceTimersByTimeAsync(POST_COMPACTION_TEST_DELAY_MS);
+
+		expect(compactionEvents).toContainEqual({ reason: "manual", willAutoContinue: undefined });
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(promptSpy).not.toHaveBeenCalled();
+	});
+
+	it("should auto-continue threshold compaction with a guarded continuation prompt when enabled", async () => {
+		session.setCompactionAutoContinueAfterThreshold(true);
+		const firstEntryId = seedAssistantTail();
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: firstEntryId,
+			tokensBefore: 100,
+			details: {},
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const compactionEvents: Array<{
+			willAutoContinue?: boolean;
+			autoContinueReason?: string;
+			autoContinueBlockedReason?: string;
+		}> = [];
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEvents.push({
+					willAutoContinue: event.willAutoContinue,
+					autoContinueReason: event.autoContinueReason,
+					autoContinueBlockedReason: event.autoContinueBlockedReason,
+				});
+			}
+		});
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		expect(promptSpy).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(POST_COMPACTION_TEST_DELAY_MS);
+
+		expect(compactionEvents).toContainEqual({
+			willAutoContinue: true,
+			autoContinueReason: "threshold",
+			autoContinueBlockedReason: undefined,
+		});
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		expect(promptSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "custom",
+				customType: "tsar.compaction.auto_continue",
+				display: false,
+			}),
+		);
+	});
+
+	it("should cancel scheduled threshold auto-continuation when a user prompt arrives first", async () => {
+		session.setCompactionAutoContinueAfterThreshold(true);
+		const firstEntryId = seedAssistantTail();
+		await vi.advanceTimersByTimeAsync(2);
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: firstEntryId,
+			tokensBefore: 100,
+			details: {},
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const blockedEvents: Array<{ reason: string; blockedReason: string }> = [];
+		session.subscribe((event) => {
+			if (event.type === "auto_continue_blocked") {
+				blockedEvents.push({ reason: event.reason, blockedReason: event.blockedReason });
+			}
+		});
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		await session.prompt("user follow-up wins");
+		await vi.advanceTimersByTimeAsync(POST_COMPACTION_TEST_DELAY_MS);
+
+		expect(blockedEvents).toContainEqual({ reason: "threshold", blockedReason: "cancelled" });
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		expect(promptSpy.mock.calls[0]?.[0]).toEqual([
+			expect.objectContaining({
+				role: "user",
+				content: [{ type: "text", text: "user follow-up wins" }],
+			}),
+		]);
+	});
+
+	it("should cancel threshold auto-continuation when compaction_end starts a queued prompt", async () => {
+		session.setCompactionAutoContinueAfterThreshold(true);
+		const firstEntryId = seedAssistantTail();
+		await vi.advanceTimersByTimeAsync(2);
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: firstEntryId,
+			tokensBefore: 100,
+			details: {},
+		});
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const blockedEvents: Array<{ reason: string; blockedReason: string }> = [];
+		let queuedPromptPromise: Promise<void> | undefined;
+		session.subscribe((event) => {
+			if (event.type === "auto_continue_blocked") {
+				blockedEvents.push({ reason: event.reason, blockedReason: event.blockedReason });
+			}
+			if (event.type === "compaction_end" && event.reason === "threshold") {
+				queuedPromptPromise = session.prompt("queued prompt flushed from compaction_end");
+			}
+		});
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		if (!queuedPromptPromise) {
+			throw new Error("Expected compaction_end listener to start queued prompt");
+		}
+		await queuedPromptPromise;
+		await vi.advanceTimersByTimeAsync(POST_COMPACTION_TEST_DELAY_MS);
+
+		expect(blockedEvents).toContainEqual({ reason: "threshold", blockedReason: "cancelled" });
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		expect(promptSpy.mock.calls[0]?.[0]).toEqual([
+			expect.objectContaining({
+				role: "user",
+				content: [{ type: "text", text: "queued prompt flushed from compaction_end" }],
+			}),
+		]);
+	});
+
+	it("should not auto-continue threshold compaction when the setting is disabled", async () => {
+		session.setCompactionAutoContinueAfterThreshold(false);
+		seedAssistantTail();
+
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const compactionEvents: Array<{
+			willAutoContinue?: boolean;
+			autoContinueReason?: string;
+			autoContinueBlockedReason?: string;
+		}> = [];
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEvents.push({
+					willAutoContinue: event.willAutoContinue,
+					autoContinueReason: event.autoContinueReason,
+					autoContinueBlockedReason: event.autoContinueBlockedReason,
+				});
+			}
+		});
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		await vi.advanceTimersByTimeAsync(POST_COMPACTION_TEST_DELAY_MS);
+
+		expect(compactionEvents).toContainEqual({
+			willAutoContinue: false,
+			autoContinueReason: "threshold",
+			autoContinueBlockedReason: "disabled",
+		});
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(promptSpy).not.toHaveBeenCalled();
+	});
+
+	it("should block threshold auto-continuation when post-compaction context still does not fit", async () => {
+		session.setCompactionAutoContinueAfterThreshold(true);
+		seedAssistantTail();
+
+		const model = session.model!;
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+		const compactionEvents: Array<{
+			willAutoContinue?: boolean;
+			autoContinueReason?: string;
+			autoContinueBlockedReason?: string;
+		}> = [];
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				compactionEvents.push({
+					willAutoContinue: event.willAutoContinue,
+					autoContinueReason: event.autoContinueReason,
+					autoContinueBlockedReason: event.autoContinueBlockedReason,
+				});
+			}
+		});
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (
+					reason: "overflow" | "threshold",
+					willRetry: boolean,
+					fixedOverhead?: number,
+				) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false, model.contextWindow);
+		await vi.advanceTimersByTimeAsync(POST_COMPACTION_TEST_DELAY_MS);
+
+		expect(compactionEvents).toContainEqual({
+			willAutoContinue: false,
+			autoContinueReason: "threshold",
+			autoContinueBlockedReason: "context_too_large",
+		});
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(promptSpy).not.toHaveBeenCalled();
 	});
 
 	it("should resume after threshold compaction when only agent-level queued messages exist", async () => {
@@ -1027,7 +1307,12 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		await checkCompaction(errorAssistant);
 
-		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false, expect.any(Number));
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith(
+			"threshold",
+			false,
+			expect.any(Number),
+			expect.objectContaining({ allowThresholdAutoContinue: true }),
+		);
 	});
 
 	it("should not trigger threshold compaction for error messages when no prior usage exists", async () => {

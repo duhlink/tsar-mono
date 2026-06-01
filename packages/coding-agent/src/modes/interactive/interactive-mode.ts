@@ -2693,8 +2693,29 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 					}
 				}
+				if (event.willAutoContinue && !event.willRetry) {
+					this.showStatus(
+						event.autoContinueReason === "queued_messages"
+							? "Resuming queued messages after compaction..."
+							: "Continuing after compaction...",
+					);
+				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
-				this.ui.requestRender(event.willRetry);
+				this.ui.requestRender(event.willRetry || event.willAutoContinue === true);
+				break;
+			}
+
+			case "auto_continue_start": {
+				this.showStatus("Continuing after compaction...");
+				this.ui.requestRender(true);
+				break;
+			}
+
+			case "auto_continue_blocked": {
+				if (!["cancelled", "pending_messages", "prompt_in_progress", "streaming"].includes(event.blockedReason)) {
+					this.showStatus(`Auto-continuation skipped: ${event.blockedReason.replace(/_/g, " ")}`);
+					this.ui.requestRender();
+				}
 				break;
 			}
 

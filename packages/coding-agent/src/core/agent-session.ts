@@ -104,6 +104,22 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	};
 }
 
+export type CompactionAutoContinueReason = "overflow_retry" | "queued_messages" | "extension" | "threshold";
+
+export type CompactionAutoContinueBlockedReason =
+	| "disabled"
+	| "pre_prompt"
+	| "context_too_large"
+	| "disposed"
+	| "streaming"
+	| "bash_running"
+	| "compacting"
+	| "scheduled_continue"
+	| "pending_messages"
+	| "prompt_in_progress"
+	| "cancelled"
+	| "empty_context";
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
@@ -114,7 +130,16 @@ export type AgentSessionEvent =
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
+			willAutoContinue?: boolean;
+			autoContinueReason?: CompactionAutoContinueReason;
+			autoContinueBlockedReason?: CompactionAutoContinueBlockedReason;
 			errorMessage?: string;
+	  }
+	| { type: "auto_continue_start"; reason: "extension" | "threshold" }
+	| {
+			type: "auto_continue_blocked";
+			reason: "extension" | "threshold";
+			blockedReason: CompactionAutoContinueBlockedReason;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
@@ -214,6 +239,24 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 /** Thinking levels including xhigh (for supported models) */
 const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+const POST_COMPACTION_CONTINUE_DELAY_MS = 100;
+const COMPACTION_AUTO_CONTINUE_CUSTOM_TYPE = "tsar.compaction.auto_continue";
+const COMPACTION_AUTO_CONTINUE_PROMPT = [
+	"Context compaction completed automatically.",
+	"Continue the active task from the ContinuationContract and latest user instructions.",
+	"Do not repeat completed work; if no work remains, briefly state that the task is complete.",
+].join(" ");
+
+interface AutoCompactionOptions {
+	allowThresholdAutoContinue?: boolean;
+}
+
+interface PostCompactionContinuationDecision {
+	action: "none" | "continue" | "auto_prompt";
+	reason?: CompactionAutoContinueReason;
+	blockedReason?: CompactionAutoContinueBlockedReason;
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -229,6 +272,9 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _agentEventQueue: Promise<void> = Promise.resolve();
+	private _isDisposed = false;
+	private _promptSubmissionActive = false;
+	private _autoContinueGeneration = 0;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -682,6 +728,8 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._isDisposed = true;
+		this._autoContinueGeneration++;
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 	}
@@ -894,128 +942,134 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		this._autoContinueGeneration++;
+		this._promptSubmissionActive = true;
+		try {
+			const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 
-		// Handle extension commands first (execute immediately, even during streaming)
-		// Extension commands manage their own LLM interaction via pi.sendMessage()
-		if (expandPromptTemplates && text.startsWith("/")) {
-			const handled = await this._tryExecuteExtensionCommand(text);
-			if (handled) {
-				// Extension command executed, no prompt to send
-				return;
-			}
-		}
-
-		// Emit input event for extension interception (before skill/template expansion)
-		let currentText = text;
-		let currentImages = options?.images;
-		if (this._extensionRunner?.hasHandlers("input")) {
-			const inputResult = await this._extensionRunner.emitInput(
-				currentText,
-				currentImages,
-				options?.source ?? "interactive",
-			);
-			if (inputResult.action === "handled") {
-				return;
-			}
-			if (inputResult.action === "transform") {
-				currentText = inputResult.text;
-				currentImages = inputResult.images ?? currentImages;
-			}
-		}
-
-		// Expand skill commands (/skill:name args) and prompt templates (/template args)
-		let expandedText = currentText;
-		if (expandPromptTemplates) {
-			expandedText = this._expandSkillCommand(expandedText);
-			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
-		}
-
-		// If streaming (or about to resume from an auto-continue), queue via steer() or followUp().
-		if (this.isStreaming || this._scheduledContinuePromise) {
-			if (!options?.streamingBehavior) {
-				throw new Error(
-					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-				);
-			}
-			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
-			} else {
-				await this._queueSteer(expandedText, currentImages);
-			}
-			return;
-		}
-
-		// Flush any pending bash messages before the new prompt
-		this._flushPendingBashMessages();
-
-		// Validate model
-		if (!this.model) {
-			throw new Error(
-				"No model selected.\n\n" +
-					`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}\n\n` +
-					"Then use /model to select a model.",
-			);
-		}
-
-		await this._assertAuth(this.model);
-
-		// Check if we need to compact before sending (catches aborted responses)
-		const lastAssistant = this._findLastAssistantMessage();
-		if (lastAssistant) {
-			await this._checkCompaction(lastAssistant, false);
-		}
-
-		// Build messages array (custom message if any, then user message)
-		const messages: AgentMessage[] = [];
-
-		// Add user message
-		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-		if (currentImages) {
-			userContent.push(...currentImages);
-		}
-		messages.push({
-			role: "user",
-			content: userContent,
-			timestamp: Date.now(),
-		});
-
-		// Inject any pending "nextTurn" messages as context alongside the user message
-		for (const msg of this._pendingNextTurnMessages) {
-			messages.push(msg);
-		}
-		this._pendingNextTurnMessages = [];
-
-		// Emit before_agent_start extension event
-		if (this._extensionRunner) {
-			const result = await this._extensionRunner.emitBeforeAgentStart(
-				expandedText,
-				currentImages,
-				this._baseSystemPrompt,
-			);
-			// Add all custom messages from extensions
-			if (result?.messages) {
-				for (const msg of result.messages) {
-					messages.push({
-						role: "custom",
-						customType: msg.customType,
-						content: msg.content,
-						display: msg.display,
-						details: msg.details,
-						timestamp: Date.now(),
-					});
+			// Handle extension commands first (execute immediately, even during streaming)
+			// Extension commands manage their own LLM interaction via pi.sendMessage()
+			if (expandPromptTemplates && text.startsWith("/")) {
+				const handled = await this._tryExecuteExtensionCommand(text);
+				if (handled) {
+					// Extension command executed, no prompt to send
+					return;
 				}
 			}
-			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt) {
-				this.agent.setSystemPrompt(result.systemPrompt);
-			} else {
-				// Ensure we're using the base prompt (in case previous turn had modifications)
-				this.agent.setSystemPrompt(this._baseSystemPrompt);
-			}
-		}
 
-		await this._runAgentPrompt(messages);
+			// Emit input event for extension interception (before skill/template expansion)
+			let currentText = text;
+			let currentImages = options?.images;
+			if (this._extensionRunner?.hasHandlers("input")) {
+				const inputResult = await this._extensionRunner.emitInput(
+					currentText,
+					currentImages,
+					options?.source ?? "interactive",
+				);
+				if (inputResult.action === "handled") {
+					return;
+				}
+				if (inputResult.action === "transform") {
+					currentText = inputResult.text;
+					currentImages = inputResult.images ?? currentImages;
+				}
+			}
+
+			// Expand skill commands (/skill:name args) and prompt templates (/template args)
+			let expandedText = currentText;
+			if (expandPromptTemplates) {
+				expandedText = this._expandSkillCommand(expandedText);
+				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+			}
+
+			// If streaming (or about to resume from an auto-continue), queue via steer() or followUp().
+			if (this.isStreaming || this._scheduledContinuePromise) {
+				if (!options?.streamingBehavior) {
+					throw new Error(
+						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+					);
+				}
+				if (options.streamingBehavior === "followUp") {
+					await this._queueFollowUp(expandedText, currentImages);
+				} else {
+					await this._queueSteer(expandedText, currentImages);
+				}
+				return;
+			}
+
+			// Flush any pending bash messages before the new prompt
+			this._flushPendingBashMessages();
+
+			// Validate model
+			if (!this.model) {
+				throw new Error(
+					"No model selected.\n\n" +
+						`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}\n\n` +
+						"Then use /model to select a model.",
+				);
+			}
+
+			await this._assertAuth(this.model);
+
+			// Check if we need to compact before sending (catches aborted responses)
+			const lastAssistant = this._findLastAssistantMessage();
+			if (lastAssistant) {
+				await this._checkCompaction(lastAssistant, false, { allowThresholdAutoContinue: false });
+			}
+
+			// Build messages array (custom message if any, then user message)
+			const messages: AgentMessage[] = [];
+
+			// Add user message
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+			if (currentImages) {
+				userContent.push(...currentImages);
+			}
+			messages.push({
+				role: "user",
+				content: userContent,
+				timestamp: Date.now(),
+			});
+
+			// Inject any pending "nextTurn" messages as context alongside the user message
+			for (const msg of this._pendingNextTurnMessages) {
+				messages.push(msg);
+			}
+			this._pendingNextTurnMessages = [];
+
+			// Emit before_agent_start extension event
+			if (this._extensionRunner) {
+				const result = await this._extensionRunner.emitBeforeAgentStart(
+					expandedText,
+					currentImages,
+					this._baseSystemPrompt,
+				);
+				// Add all custom messages from extensions
+				if (result?.messages) {
+					for (const msg of result.messages) {
+						messages.push({
+							role: "custom",
+							customType: msg.customType,
+							content: msg.content,
+							display: msg.display,
+							details: msg.details,
+							timestamp: Date.now(),
+						});
+					}
+				}
+				// Apply extension-modified system prompt, or reset to base
+				if (result?.systemPrompt) {
+					this.agent.setSystemPrompt(result.systemPrompt);
+				} else {
+					// Ensure we're using the base prompt (in case previous turn had modifications)
+					this.agent.setSystemPrompt(this._baseSystemPrompt);
+				}
+			}
+
+			await this._runAgentPrompt(messages);
+		} finally {
+			this._promptSubmissionActive = false;
+		}
 	}
 
 	private async _runAgentPrompt(message: AgentMessage | AgentMessage[]): Promise<void> {
@@ -1301,6 +1355,7 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		this._autoContinueGeneration++;
 		this.abortRetry();
 		this.agent.abort();
 		await this.agent.waitForIdle();
@@ -1776,7 +1831,11 @@ export class AgentSession {
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
-	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	private async _checkCompaction(
+		assistantMessage: AssistantMessage,
+		skipAbortedCheck = true,
+		options?: AutoCompactionOptions,
+	): Promise<void> {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return;
 
@@ -1856,7 +1915,9 @@ export class AgentSession {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
 		if (shouldCompact(contextTokens, contextWindow, settings, fixedOverhead)) {
-			await this._runAutoCompaction("threshold", false, fixedOverhead);
+			await this._runAutoCompaction("threshold", false, fixedOverhead, {
+				allowThresholdAutoContinue: options?.allowThresholdAutoContinue ?? true,
+			});
 		}
 	}
 
@@ -1867,6 +1928,7 @@ export class AgentSession {
 		reason: "overflow" | "threshold",
 		willRetry: boolean,
 		fixedOverhead = 0,
+		options?: AutoCompactionOptions,
 	): Promise<void> {
 		const settings = this.settingsManager.getCompactionSettings();
 
@@ -2048,26 +2110,28 @@ export class AgentSession {
 				});
 			}
 
+			const postCompactionMessageTokens = this.agent.state.messages.reduce(
+				(total, message) => total + estimateTokens(message),
+				0,
+			);
+			const postCompactionTotal = postCompactionMessageTokens + fixedOverhead;
+			const postCompactionFits = postCompactionTotal <= this.model.contextWindow - settings.reserveTokens;
+
 			// Post-compaction size verification for overflow retries.
 			// The compaction has already mutated session state and fired post-compaction
 			// hooks, so failure here must still surface the compaction result.
-			if (willRetry && this.model) {
-				const postCompactionMessageTokens = this.agent.state.messages.reduce(
-					(total, message) => total + estimateTokens(message),
-					0,
-				);
-				const postCompactionTotal = postCompactionMessageTokens + fixedOverhead;
-				if (postCompactionTotal > this.model.contextWindow - settings.reserveTokens) {
-					this._emit({
-						type: "compaction_end",
-						reason,
-						result,
-						aborted: false,
-						willRetry: false,
-						errorMessage: `Context overflow recovery failed: post-compaction context (${postCompactionTotal} estimated tokens) still exceeds model window (${this.model.contextWindow} tokens). Fixed overhead: ${fixedOverhead} tokens. Try reducing context or switching to a larger-context model.`,
-					});
-					return;
-				}
+			if (willRetry && !postCompactionFits) {
+				this._emit({
+					type: "compaction_end",
+					reason,
+					result,
+					aborted: false,
+					willRetry: false,
+					willAutoContinue: false,
+					autoContinueBlockedReason: "context_too_large",
+					errorMessage: `Context overflow recovery failed: post-compaction context (${postCompactionTotal} estimated tokens) still exceeds model window (${this.model.contextWindow} tokens). Fixed overhead: ${fixedOverhead} tokens. Try reducing context or switching to a larger-context model.`,
+				});
+				return;
 			}
 
 			if (willRetry && !this._normalizePostCompactionRetryMessages()) {
@@ -2077,28 +2141,53 @@ export class AgentSession {
 					result,
 					aborted: false,
 					willRetry: false,
+					willAutoContinue: false,
 					errorMessage:
 						"Context overflow recovery failed: post-compaction context did not contain a retryable user or tool-result tail.",
 				});
 				return;
 			}
 
-			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+			const continuationDecision = this._getPostCompactionContinuationDecision({
+				reason,
+				willRetry,
+				extensionAutoContinue,
+				allowThresholdAutoContinue: options?.allowThresholdAutoContinue ?? true,
+				postCompactionFits,
+			});
+			const willAutoContinue = continuationDecision.action !== "none";
+			// Capture before compaction_end listeners run. Interactive listeners may synchronously
+			// flush compaction-queued user prompts, and those prompts must cancel this cycle.
+			const guardedAutoContinueGeneration = this._autoContinueGeneration;
+			this._emit({
+				type: "compaction_end",
+				reason,
+				result,
+				aborted: false,
+				willRetry,
+				willAutoContinue,
+				autoContinueReason: continuationDecision.reason,
+				autoContinueBlockedReason: continuationDecision.blockedReason,
+			});
 
 			if (willRetry) {
-				this._scheduleAgentContinue(100, (err) => {
+				this._scheduleAgentContinue(POST_COMPACTION_CONTINUE_DELAY_MS, (err) => {
 					console.error("[AgentSession] Post-compaction retry failed:", err instanceof Error ? err.message : err);
 				});
-			} else if (this.agent.hasQueuedMessages() || extensionAutoContinue) {
+			} else if (continuationDecision.action === "continue") {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
-				// Also continue if extension requested auto-continue (d_20260417_030).
-				this._scheduleAgentContinue(100, (err) => {
+				this._scheduleAgentContinue(POST_COMPACTION_CONTINUE_DELAY_MS, (err) => {
 					console.error(
 						"[AgentSession] Post-compaction continue failed:",
 						err instanceof Error ? err.message : err,
 					);
 				});
+			} else if (
+				continuationDecision.action === "auto_prompt" &&
+				(continuationDecision.reason === "threshold" || continuationDecision.reason === "extension")
+			) {
+				this._scheduleGuardedPostCompactionAutoContinue(continuationDecision.reason, guardedAutoContinueGeneration);
 			}
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
@@ -2116,6 +2205,173 @@ export class AgentSession {
 		} finally {
 			this._autoCompactionAbortController = undefined;
 		}
+	}
+
+	private _getPostCompactionContinuationDecision(options: {
+		reason: "overflow" | "threshold";
+		willRetry: boolean;
+		extensionAutoContinue: boolean;
+		allowThresholdAutoContinue: boolean;
+		postCompactionFits: boolean;
+	}): PostCompactionContinuationDecision {
+		if (options.willRetry) {
+			return { action: "continue", reason: "overflow_retry" };
+		}
+
+		if (this.agent.hasQueuedMessages()) {
+			const blockedReason = this._getPostCompactionAutoContinueBlockedReason(options.postCompactionFits, {
+				ignoreCurrentCompaction: true,
+				ignorePromptInProgress: true,
+				ignorePendingMessages: true,
+			});
+			if (blockedReason) {
+				return { action: "none", reason: "queued_messages", blockedReason };
+			}
+			return { action: "continue", reason: "queued_messages" };
+		}
+
+		const requestedReason = options.extensionAutoContinue ? "extension" : "threshold";
+		if (!options.extensionAutoContinue) {
+			if (options.reason !== "threshold") {
+				return { action: "none" };
+			}
+			if (!options.allowThresholdAutoContinue) {
+				return { action: "none", reason: requestedReason, blockedReason: "pre_prompt" };
+			}
+			if (!this.settingsManager.getCompactionAutoContinueAfterThreshold()) {
+				return { action: "none", reason: requestedReason, blockedReason: "disabled" };
+			}
+		}
+
+		const blockedReason = this._getPostCompactionAutoContinueBlockedReason(options.postCompactionFits, {
+			ignoreCurrentCompaction: true,
+			ignorePromptInProgress: true,
+		});
+		if (blockedReason) {
+			return { action: "none", reason: requestedReason, blockedReason };
+		}
+
+		return { action: "auto_prompt", reason: requestedReason };
+	}
+
+	private _getPostCompactionAutoContinueBlockedReason(
+		postCompactionFits: boolean,
+		options?: {
+			ignoreCurrentCompaction?: boolean;
+			ignorePromptInProgress?: boolean;
+			ignorePendingMessages?: boolean;
+		},
+	): CompactionAutoContinueBlockedReason | undefined {
+		if (!postCompactionFits) {
+			return "context_too_large";
+		}
+		return this._getRuntimeAutoContinueBlockedReason(options);
+	}
+
+	private _getRuntimeAutoContinueBlockedReason(options?: {
+		ignoreCurrentCompaction?: boolean;
+		ignorePromptInProgress?: boolean;
+		ignorePendingMessages?: boolean;
+	}): CompactionAutoContinueBlockedReason | undefined {
+		if (this._isDisposed) {
+			return "disposed";
+		}
+		if (this.isStreaming) {
+			return "streaming";
+		}
+		if (!options?.ignorePromptInProgress && this._promptSubmissionActive) {
+			return "prompt_in_progress";
+		}
+		if (this._scheduledContinuePromise) {
+			return "scheduled_continue";
+		}
+		if (!options?.ignoreCurrentCompaction && this.isCompacting) {
+			return "compacting";
+		}
+		if (this.isBashRunning || this.hasPendingBashMessages) {
+			return "bash_running";
+		}
+		if (
+			!options?.ignorePendingMessages &&
+			(this.agent.hasQueuedMessages() || this.pendingMessageCount > 0 || this._pendingNextTurnMessages.length > 0)
+		) {
+			return "pending_messages";
+		}
+		if (this.agent.state.messages.length === 0) {
+			return "empty_context";
+		}
+		return undefined;
+	}
+
+	private _scheduleGuardedPostCompactionAutoContinue(
+		reason: "extension" | "threshold",
+		scheduledGeneration: number,
+	): void {
+		setTimeout(async () => {
+			if (scheduledGeneration !== this._autoContinueGeneration) {
+				this._emit({ type: "auto_continue_blocked", reason, blockedReason: "cancelled" });
+				return;
+			}
+
+			const blockedReason = this._getRuntimeAutoContinueBlockedReason();
+			if (blockedReason) {
+				this._emit({ type: "auto_continue_blocked", reason, blockedReason });
+				return;
+			}
+
+			const lastMessage = this.agent.state.messages[this.agent.state.messages.length - 1];
+			if (!lastMessage) {
+				this._emit({ type: "auto_continue_blocked", reason, blockedReason: "empty_context" });
+				return;
+			}
+
+			const shouldPromptFromAssistantTail = lastMessage.role === "assistant";
+			try {
+				this._emit({ type: "auto_continue_start", reason });
+				await this._fireBeforeAgentStartForContinue();
+
+				const postHookBlockedReason = this._getRuntimeAutoContinueBlockedReason();
+				if (postHookBlockedReason) {
+					this._emit({ type: "auto_continue_blocked", reason, blockedReason: postHookBlockedReason });
+					return;
+				}
+
+				if (shouldPromptFromAssistantTail) {
+					await this._runAgentPrompt(this._createCompactionAutoContinueMessage(reason));
+				} else {
+					await this._runAgentContinue();
+				}
+			} catch (err) {
+				console.error(
+					"[AgentSession] Post-compaction auto-continue failed:",
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}, POST_COMPACTION_CONTINUE_DELAY_MS);
+	}
+
+	private _createCompactionAutoContinueMessage(reason: "extension" | "threshold"): CustomMessage<{
+		reason: "extension" | "threshold";
+		createdAt: string;
+	}> {
+		return {
+			role: "custom",
+			customType: COMPACTION_AUTO_CONTINUE_CUSTOM_TYPE,
+			content: COMPACTION_AUTO_CONTINUE_PROMPT,
+			display: false,
+			details: {
+				reason,
+				createdAt: new Date().toISOString(),
+			},
+			timestamp: Date.now(),
+		};
+	}
+
+	private async _runAgentContinue(): Promise<void> {
+		await this.agent.continue();
+		await this.waitForRetry();
+		await this._waitForQueuedAgentEvents();
+		await this._waitForScheduledContinue();
 	}
 
 	private _getRetryCompactionParentId(pathEntries: SessionEntry[]): string | undefined {
@@ -2164,6 +2420,16 @@ export class AgentSession {
 	/** Whether auto-compaction is enabled */
 	get autoCompactionEnabled(): boolean {
 		return this.settingsManager.getCompactionEnabled();
+	}
+
+	/** Toggle guarded threshold/proactive continuation after successful auto-compaction. */
+	setCompactionAutoContinueAfterThreshold(enabled: boolean): void {
+		this.settingsManager.setCompactionAutoContinueAfterThreshold(enabled);
+	}
+
+	/** Whether guarded threshold/proactive continuation is enabled. */
+	get compactionAutoContinueAfterThresholdEnabled(): boolean {
+		return this.settingsManager.getCompactionAutoContinueAfterThreshold();
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
@@ -2686,11 +2952,13 @@ export class AgentSession {
 	}
 
 	private _scheduleAgentContinue(delayMs: number, onError: (error: unknown) => void): void {
-		if (!this._scheduledContinuePromise) {
-			this._scheduledContinuePromise = new Promise((resolve) => {
-				this._scheduledContinueResolve = resolve;
-			});
+		if (this._scheduledContinuePromise) {
+			return;
 		}
+
+		this._scheduledContinuePromise = new Promise((resolve) => {
+			this._scheduledContinueResolve = resolve;
+		});
 
 		setTimeout(async () => {
 			try {

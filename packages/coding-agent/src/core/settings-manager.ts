@@ -8,6 +8,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	autoContinueAfterThreshold?: boolean; // default: false - guarded threshold/proactive continuation
 }
 
 export interface BranchSummarySettings {
@@ -632,6 +633,20 @@ export class SettingsManager {
 
 	getCompactionKeepRecentTokens(): number {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
+	}
+
+	getCompactionAutoContinueAfterThreshold(): boolean {
+		const value = this.settings.compaction?.autoContinueAfterThreshold;
+		return typeof value === "boolean" ? value : false;
+	}
+
+	setCompactionAutoContinueAfterThreshold(enabled: boolean): void {
+		if (!this.globalSettings.compaction) {
+			this.globalSettings.compaction = {};
+		}
+		this.globalSettings.compaction.autoContinueAfterThreshold = enabled;
+		this.markModified("compaction", "autoContinueAfterThreshold");
+		this.save();
 	}
 
 	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
