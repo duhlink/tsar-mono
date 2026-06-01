@@ -51,19 +51,28 @@ Edit directly or use `/settings` for common options.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `compaction.enabled` | boolean | `true` | Enable auto-compaction |
-| `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
-| `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
+| `compaction.enabled` | boolean | `true` | Enable auto-compaction. Manual `/compact` remains available when this is `false`. |
+| `compaction.reserveTokens` | number | `16384` | Tokens reserved for the LLM response and retry headroom |
+| `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep unsummarized before the compaction boundary |
+| `compaction.autoContinueAfterThreshold` | boolean | `false` | After successful threshold/proactive auto-compaction, inject a guarded continuation prompt and resume automatically |
 
 ```json
 {
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "keepRecentTokens": 20000,
+    "autoContinueAfterThreshold": false
   }
 }
 ```
+
+Automatic compaction has two continuation paths:
+
+- **Overflow retry:** when the provider reports context overflow, tsar compacts, rebuilds context from a retry-safe boundary, and retries automatically if the post-compaction context fits.
+- **Threshold/proactive:** when context is merely near the limit, tsar compacts and waits by default. Set `autoContinueAfterThreshold` to `true` to allow a guarded continuation prompt after compaction.
+
+Threshold auto-continuation is conservative: it is blocked while the session is streaming, compacting, running bash, handling another prompt, disposed, scheduled to continue, still too large for the model window, or carrying pending user/queued messages. Manual `/compact` is always idle after it finishes.
 
 ### Branch Summary
 

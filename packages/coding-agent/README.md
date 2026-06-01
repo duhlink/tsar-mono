@@ -16,7 +16,7 @@ OSS weekend runs Friday, March 27, 2026 through Monday, April 6, 2026. New issue
 <p align="center">
   <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
   <a href="https://www.npmjs.com/package/@tsar/coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@tsar/coding-agent?style=flat-square" /></a>
-  <a href="https://github.com/badlogic/pi-mono/actions/workflows/ci.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/badlogic/pi-mono/ci.yml?style=flat-square&branch=main" /></a>
+  <a href="https://github.com/badlogic/tsar-mono/actions/workflows/ci.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/badlogic/tsar-mono/ci.yml?style=flat-square&branch=main" /></a>
 </p>
 <p align="center">
   <a href="https://pi.dev">pi.dev</a> domain graciously donated by
@@ -234,13 +234,13 @@ tsar --fork <path>       # Fork specific session file or ID into a new session
 
 ### Compaction
 
-Long sessions can exhaust context windows. Compaction summarizes older messages while keeping recent ones.
+Long sessions can exhaust context windows. Compaction summarizes older messages while preserving recent work and inserts a hidden ContinuationContract v1 before the lossy summary so continuation is anchored to the exact visible user intent ledger.
 
-**Manual:** `/compact` or `/compact <custom instructions>`
+**Manual:** `/compact` or `/compact <custom instructions>`. Manual compaction rewrites context and then stays idle; it does not auto-continue.
 
-**Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`.
+**Automatic:** Enabled by default. Overflow compaction recovers from context-window errors and retries the interrupted turn when the post-compaction context fits. Threshold/proactive compaction runs before overflow; by default it compacts and waits for the next user message. To let proactive compaction resume automatically, set `"compaction": { "autoContinueAfterThreshold": true }`. Guarded resume is skipped if the session is busy, context is still too large, or user/queued messages are waiting; queued user intent wins over generated continuation prompts.
 
-Compaction is lossy. The full history remains in the JSONL file; use `/tree` to revisit. Customize compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
+Compaction summaries are schema-validated/repaired, but they are still lossy. The full history remains in the JSONL file; use `/tree` to revisit. Toggle auto-compaction in `/settings`; tune token budgets and threshold auto-continuation in `settings.json`. Customize compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
 
 ---
 

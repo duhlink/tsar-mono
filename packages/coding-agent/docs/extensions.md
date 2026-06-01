@@ -355,9 +355,9 @@ pi.on("session_fork", async (event, ctx) => {
 });
 ```
 
-#### session_before_compact / session_compact
+#### session_before_compact / session_compact / session_after_compact
 
-Fired on compaction. See [compaction.md](compaction.md) for details.
+Fired on compaction. See [compaction.md](compaction.md) for details, including ContinuationContract capture, summary schema expectations, and guarded continuation behavior.
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
@@ -379,8 +379,15 @@ pi.on("session_before_compact", async (event, ctx) => {
 pi.on("session_compact", async (event, ctx) => {
   // event.compactionEntry - the saved compaction
   // event.fromExtension - whether extension provided it
+  // A ContinuationContract v1 custom entry was saved immediately before it.
+});
+
+pi.on("session_after_compact", async (event, ctx) => {
+  // event.tokensBefore, event.tokensAfter, event.messagesRemoved, event.compactionCount
 });
 ```
+
+Extensions that provide custom compaction from `session_before_compact` own the summary schema they return; tsar still captures ContinuationContract v1 before saving the compaction. `session_compact` is a no-return public event (`ExtensionHandler<SessionCompactEvent>`) for observing the saved compaction; strict TypeScript extension handlers should not return `{ autoContinue: true }` or any other result. Automatic post-compaction continuation is controlled by core compaction settings/overflow retry and remains guarded by queued-message, lifecycle, and context-size checks. Manual `/compact` stays idle.
 
 #### session_before_tree / session_tree
 
@@ -827,7 +834,7 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger compaction without awaiting completion. Use `onComplete` and `onError` for follow-up actions.
+Trigger compaction without awaiting completion. Use `onComplete` and `onError` for follow-up actions. This uses the manual compaction path: it captures ContinuationContract v1 and fires compaction hooks, but it stays idle when finished unless your extension explicitly sends the next user message.
 
 ```typescript
 ctx.compact({
@@ -1539,13 +1546,13 @@ See [examples/extensions/tool-override.ts](../examples/extensions/tool-override.
 **Your implementation must match the exact result shape**, including the `details` type. The UI and session logic depend on these shapes for rendering and state tracking.
 
 Built-in tool implementations:
-- [read.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts) - `ReadToolDetails`
-- [bash.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts) - `BashToolDetails`
-- [edit.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)
-- [write.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/write.ts)
-- [grep.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/grep.ts) - `GrepToolDetails`
-- [find.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/find.ts) - `FindToolDetails`
-- [ls.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/ls.ts) - `LsToolDetails`
+- [read.ts](../src/core/tools/read.ts) - `ReadToolDetails`
+- [bash.ts](../src/core/tools/bash.ts) - `BashToolDetails`
+- [edit.ts](../src/core/tools/edit.ts)
+- [write.ts](../src/core/tools/write.ts)
+- [grep.ts](../src/core/tools/grep.ts) - `GrepToolDetails`
+- [find.ts](../src/core/tools/find.ts) - `FindToolDetails`
+- [ls.ts](../src/core/tools/ls.ts) - `LsToolDetails`
 
 ### Remote Execution
 
@@ -1668,7 +1675,7 @@ export default function (pi: ExtensionAPI) {
 
 ### Custom Rendering
 
-Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
+Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](../src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
 
 Tool output is wrapped in a `Box` that handles padding and background. A defined `renderCall` or `renderResult` must return a `Component`. If a slot renderer is not defined, `tool-execution.ts` uses fallback rendering for that slot.
 
